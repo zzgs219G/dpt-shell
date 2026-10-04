@@ -10,7 +10,7 @@ dpt-shell 是一种将 dex 文件中的函数代码抽空，然后在程序运�
 
 ### 快速使用
 
-转到 [Releases](https://github.com/luoyesiqiu/dpt-shell/releases/latest) 页面下载 `executable.zip`，解压，执行以下命令：
+转到 [Releases](https://github.com/luoyesiqiu/dpt-shell/releases/latest) 页面下载 `dpt-shell-<version>.zip`，解压，执行以下命令：
 
 ```shell
 java -jar dpt.jar -f /path/to/android-package-file
@@ -21,7 +21,7 @@ java -jar dpt.jar -f /path/to/android-package-file
 ```shell
 git clone --recursive https://github.com/luoyesiqiu/dpt-shell
 cd dpt-shell
-./gradlew assemble
+./gradlew build
 cd executable
 java -jar dpt.jar -f /path/to/android-package-file
 ```

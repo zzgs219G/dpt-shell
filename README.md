@@ -10,7 +10,7 @@ dpt-shell is an Android Dex protection shell that hollows out Dex method impleme
 
 ### Quick uses
 
-Go to [Releases](https://github.com/luoyesiqiu/dpt-shell/releases/latest) download `executable.zip` and unzip it, run the follow command lines in terminal: 
+Go to [Releases](https://github.com/luoyesiqiu/dpt-shell/releases/latest) download `dpt-shell-<version>.zip` and unzip it, run the follow command lines in terminal: 
 
 ```shell
 java -jar dpt.jar -f /path/to/android-package-file
@@ -21,7 +21,7 @@ java -jar dpt.jar -f /path/to/android-package-file
 ```shell
 git clone --recursive https://github.com/luoyesiqiu/dpt-shell
 cd dpt-shell
-./gradlew assemble
+./gradlew build
 cd executable
 java -jar dpt.jar -f /path/to/android-package-file
 ```
