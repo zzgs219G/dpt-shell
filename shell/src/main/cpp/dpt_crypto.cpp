@@ -4,6 +4,8 @@
 
 #include "dpt_crypto.h"
 #include <cstring>
+#include <climits>
+#include "rc4/rc4.h"
 
 std::vector<uint8_t> hmac_sha256(const uint8_t *key,
                                  size_t key_len,
@@ -88,4 +90,62 @@ std::vector<uint8_t> aes_cbc_decrypt(const uint8_t *key,
     mbedtls_aes_free(&ctx);
 
     return out_vec;
+}
+
+void build_chacha20_nonce(uint32_t methodIdx, uint8_t *nonce) {
+    if (nonce == nullptr) {
+        return;
+    }
+    memset(nonce, 0, DPT_CHACHA20_NONCE_SIZE);
+    // Little-endian methodIdx into the low 4 bytes, mirroring
+    // CryptoUtils.buildChaCha20Nonce() on the build side.
+    nonce[0] = static_cast<uint8_t>(methodIdx & 0xFF);
+    nonce[1] = static_cast<uint8_t>((methodIdx >> 8) & 0xFF);
+    nonce[2] = static_cast<uint8_t>((methodIdx >> 16) & 0xFF);
+    nonce[3] = static_cast<uint8_t>((methodIdx >> 24) & 0xFF);
+}
+
+bool chacha20_crypt_insns(const uint8_t *key,
+                          uint32_t methodIdx,
+                          const uint8_t *in,
+                          size_t inlen,
+                          uint8_t *out) {
+    if (key == nullptr || in == nullptr || out == nullptr || inlen == 0) {
+        return false;
+    }
+
+    uint8_t nonce[DPT_CHACHA20_NONCE_SIZE];
+    build_chacha20_nonce(methodIdx, nonce);
+
+    // ChaCha20 is a stream cipher: counter starts at 0 and the same call both
+    // encrypts and decrypts, so output may alias input.
+    int ret = mbedtls_chacha20_crypt(key, nonce, 0, inlen, in, out);
+    if (ret != 0) {
+        DLOGE("chacha20 crypt failed: %d", ret);
+        return false;
+    }
+    return true;
+}
+
+bool rc4_crypt_insns(const uint8_t *key,
+                     uint32_t methodIdx,
+                     const uint8_t *in,
+                     size_t inlen,
+                     uint8_t *out) {
+    if (key == nullptr || in == nullptr || out == nullptr || inlen == 0) {
+        return false;
+    }
+    if (inlen > static_cast<size_t>(INT_MAX)) {
+        return false;
+    }
+
+    // Legacy v2 layout: 32-byte aes_key followed by little-endian methodIdx.
+    uint8_t rc4_key[DPT_CHACHA20_KEY_SIZE + sizeof(uint32_t)];
+    memcpy(rc4_key, key, DPT_CHACHA20_KEY_SIZE);
+    memcpy(rc4_key + DPT_CHACHA20_KEY_SIZE, &methodIdx, sizeof(methodIdx));
+
+    struct rc4_state state;
+    rc4_init(&state, rc4_key, static_cast<int>(sizeof(rc4_key)));
+    rc4_crypt(&state, in, out, static_cast<int>(inlen));
+    return true;
 }
