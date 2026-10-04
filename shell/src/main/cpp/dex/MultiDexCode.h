@@ -69,7 +69,8 @@ namespace dpt::data {
                             const uint8_t *in,
                             size_t inlen,
                             uint8_t *out) const;
-    };
+        };
+    }
 
 
 
