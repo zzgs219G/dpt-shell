@@ -1,2 +1,0 @@
-{"sequence":1,"timestamp":"2026-10-04T06:55:38.299139963Z","event_type":"state_change","task_id":"20261004-064439.409397155-stealth-space-bunny-alpha--bash-3","session_id":"20261004-064439.409397155-stealth-space-bunny-alpha","state":"running","runtime_state":"alive"}
-{"sequence":2,"timestamp":"2026-10-04T06:56:36.815018121Z","event_type":"state_change","task_id":"20261004-064439.409397155-stealth-space-bunny-alpha--bash-3","session_id":"20261004-064439.409397155-stealth-space-bunny-alpha","state":"succeeded","runtime_state":"exited"}

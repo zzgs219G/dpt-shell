@@ -63,7 +63,13 @@ public class Const {
 
     public static final String ROOT_OF_OUT_DIR = System.getProperty("java.io.tmpdir");
 
-    public static final short MULTI_DEX_CODE_VERSION = 2;
+    // OoooooOooo payload version.
+    //   2 = instructions encrypted with RC4 (legacy)
+    //   3 = instructions encrypted with ChaCha20
+    // The runtime picks the decryption routine from this field, so a v2 payload
+    // still loads. Keep in sync with DPT_MULTI_DEX_CODE_VERSION_V2/V3 in
+    // shell/src/main/cpp/dex/MultiDexCode.h.
+    public static final short MULTI_DEX_CODE_VERSION = 3;
 
     public static final String RC4_KEY_SYMBOL = "DPT_UNKNOWN_DATA";
 

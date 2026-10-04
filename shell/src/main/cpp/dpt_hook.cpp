@@ -164,15 +164,17 @@ void patchMethod(uint8_t *begin,
 
             const uint8_t *enc = codeItem->getInsns();
             uint32_t sz = codeItem->getInsnsSize();
-
-            uint8_t rc4_key[sizeof(g_shell_config.aes_key) + sizeof(uint32_t)];
-            memcpy(rc4_key, g_shell_config.aes_key, sizeof(g_shell_config.aes_key));
             uint32_t methodIndex = codeItem->getMethodIdx();
-            memcpy(rc4_key + sizeof(g_shell_config.aes_key), &methodIndex, sizeof(methodIndex));
 
-            struct rc4_state state;
-            rc4_init(&state, rc4_key, static_cast<int>(sizeof(rc4_key)));
-            rc4_crypt(&state, enc, realInsnsPtr, static_cast<int>(sz));
+            // The decryption routine is selected once per payload from
+            // OoooooOooo's header version (see MultiDexCode::init), so this hot
+            // path stays branch-free for both v2 (RC4) and v3 (ChaCha20).
+            auto *dexCode = data::MultiDexCode::getInst();
+            if (UNLIKELY(!dexCode->cryptInsns(g_shell_config.aes_key, methodIndex,
+                                              enc, sz, realInsnsPtr))) {
+                DLOGE("decrypt insns failed, methodIndex = %d, size = %d",
+                      methodIndex, sz);
+            }
         }
         else{
             NLOG("cannot find  methodId: %d in codeitem map, dex index: %d(%s)", methodIdx, dexIndex, location);

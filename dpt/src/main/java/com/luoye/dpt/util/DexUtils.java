@@ -415,10 +415,12 @@ public class DexUtils {
         }
 
         byte[] aesKey = ShellConfig.getInstance().getInsnsCryptKey();
-        byte[] rc4Key = CryptoUtils.buildInsnsRc4Key(aesKey, method.getMethodIndex());
-        byte[] encrypted = CryptoUtils.rc4Crypt(rc4Key, byteCode);
+        // ChaCha20 since OoooooOooo v3. The nonce is derived from methodIdx,
+        // matching build_chacha20_nonce() on the runtime side.
+        byte[] chacha20Nonce = CryptoUtils.buildChaCha20Nonce(method.getMethodIndex());
+        byte[] encrypted = CryptoUtils.chacha20Crypt(aesKey, chacha20Nonce, byteCode);
         if (encrypted == null || encrypted.length != byteCode.length) {
-            throw new IllegalStateException("rc4 encrypt insns failed");
+            throw new IllegalStateException("chacha20 encrypt insns failed");
         }
         instruction.setInstructionsData(encrypted);
         outRandomAccessFile.seek(insnsOffset);
