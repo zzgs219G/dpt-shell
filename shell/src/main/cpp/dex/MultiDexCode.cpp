@@ -10,8 +10,8 @@ dpt::data::MultiDexCode* dpt::data::MultiDexCode::getInst(){
     return m_inst;
 }
 
-MultiDexCode::MultiDexCode() : m_size(0), m_buffer(nullptr), m_version(0),
-                               m_crypt_insns(rc4_crypt_insns) {
+dpt::data::MultiDexCode::MultiDexCode() : m_size(0), m_buffer(nullptr), m_version(0),
+                                         m_crypt_insns(rc4_crypt_insns) {
 }
 
 void dpt::data::MultiDexCode::init(uint8_t* buffer, size_t size){
