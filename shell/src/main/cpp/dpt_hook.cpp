@@ -2,9 +2,6 @@
 // Created by luoyesiqiu
 //
 
-#include <map>
-#include <unordered_map>
-#include <vector>
 #include <string>
 #include <cstring>
 #include <sys/system_properties.h>
@@ -17,7 +14,6 @@
 
 using namespace dpt;
 
-std::map<int,uint8_t *> dexMemMap;
 int g_sdkLevel = 0;
 extern ShellConfig g_shell_config;
 
@@ -104,26 +100,6 @@ const char *GetArtLibPath() {
 
 const char *GetClassLinkerDefineClassLibPath(){
     return GetArtLibPath();
-}
-
-void change_dex_protective(uint8_t * begin,int dexSize,int dexIndex){
-    if (begin == nullptr || dexSize <= 0) {
-        DLOGW("skip mprotect dex[%d], begin=%p, dexSize=%d", dexIndex, begin, dexSize);
-        return;
-    }
-
-    for(int i = 0;i < 10;) {
-        int ret = dpt_mprotect(begin, begin + dexSize, PROT_READ | PROT_WRITE);
-
-        if (ret != 0) {
-            DLOGE("mprotect fail, address: %p, reason: %d!", begin, ret);
-            i++;
-        } else {
-            dexMemMap.insert(std::pair<int,uint8_t *>(dexIndex,begin));
-            DLOGD("mprotect success, address: %p.", begin);
-            break;
-        }
-    }
 }
 
 DPT_ENCRYPT
