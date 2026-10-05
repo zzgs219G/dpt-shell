@@ -47,6 +47,18 @@ import java.util.regex.Pattern;
 public class DexUtils {
     private final static Map<String,Integer> codeOffAppearMap = new ConcurrentHashMap<>();
 
+    /**
+     * Shared source of the obfuscating filler bytes.
+     *
+     * Task 1.7: the old code created {@code new SecureRandom()} per method, which for a
+     * 50k-method dex meant 50k constructions. SecureRandom seeds from /dev/urandom on
+     * construction, so that was not free either.
+     *
+     * SecureRandom is thread-safe, and extractAllMethods runs dex files in parallel, so a
+     * single shared instance is safe here.
+     */
+    private static final SecureRandom INS_RANDOM = new SecureRandom();
+
     private static final OutputStream NOOP_OUTPUT_STREAM = new OutputStream() {
         @Override
         public void write(int b) {
@@ -396,34 +408,56 @@ public class DexUtils {
         }
         //Here, MethodIndex corresponds to the index of the method_ids area
         instruction.setMethodIndex(method.getMethodIndex());
+        // v4 payload keys each class by its class_data_item offset; without this the
+        // runtime could not find this method's ciphertext at patch time.
+        instruction.setClassDataOff(classDef.getClassDataOffset());
         //Note: Here is the size of the array
         instruction.setInstructionDataSize(insnsCapacity * 2);
-        byte[] byteCode = new byte[insnsCapacity * 2];
-        //Write random bytes
-        SecureRandom insRandom = new SecureRandom();
-        for (int i = 0; i < insnsCapacity; i++) {
-            outRandomAccessFile.seek(insnsOffset + (i * 2));
-            byteCode[i * 2] = outRandomAccessFile.readByte();
-            byteCode[i * 2 + 1] = outRandomAccessFile.readByte();
-            outRandomAccessFile.seek(insnsOffset + (i * 2));
-            if(obfuscateIns) {
-                outRandomAccessFile.writeShort(insRandom.nextInt());
-            }
-            else {
-                outRandomAccessFile.writeShort(0x0e);
+
+        // Task 1.7: 原实现对每个 code unit 做两次 seek + 两次 readByte +
+        // 两次 writeShort，5 万方法 × 30 code unit ≈ 300 万次系统调用。
+        // 改为一次性 readFully + 一次性 write。
+        //
+        // 注意 original 与 filler 是两份不同的数据，不能复用同一个 buffer：
+        //   original = dex 里的原指令，稍后要被加密进 OoooooOooo
+        //   filler   = 写回 dex 的填充字节，用来把方法体抽空
+        final int insnsByteLength = insnsCapacity * 2;
+
+        byte[] original = new byte[insnsByteLength];
+        outRandomAccessFile.seek(insnsOffset);
+        outRandomAccessFile.readFully(original);
+
+        byte[] filler = new byte[insnsByteLength];
+        if (obfuscateIns) {
+            // 每 code unit 一次 nextInt，与原实现语义一致。
+            // 字节序按 writeShort 的<b>大端</b>手工拼装（见 InsnsFillerBytesTest）：
+            // 原实现调writeShort((short) nextInt())，高字节在前。
+            for (int i = 0; i < insnsCapacity; i++) {
+                short v = (short) INS_RANDOM.nextInt();
+                filler[i * 2] = (byte) ((v >>> 8) & 0xff);
+                filler[i * 2 + 1] = (byte) (v & 0xff);
             }
         }
+        else {
+            // writeShort(0x0e) 实际写入 00 0e（大端），保持逐字节一致。
+            for (int i = 0; i < insnsCapacity; i++) {
+                filler[i * 2] = 0x00;
+                filler[i * 2 + 1] = 0x0e;
+            }
+        }
+
+        outRandomAccessFile.seek(insnsOffset);
+        outRandomAccessFile.write(filler);
 
         byte[] aesKey = ShellConfig.getInstance().getInsnsCryptKey();
         // ChaCha20 since OoooooOooo v3. The nonce is derived from methodIdx,
         // matching build_chacha20_nonce() on the runtime side.
         byte[] chacha20Nonce = CryptoUtils.buildChaCha20Nonce(method.getMethodIndex());
-        byte[] encrypted = CryptoUtils.chacha20Crypt(aesKey, chacha20Nonce, byteCode);
-        if (encrypted == null || encrypted.length != byteCode.length) {
+        byte[] encrypted = CryptoUtils.chacha20Crypt(aesKey, chacha20Nonce, original);
+        if (encrypted == null || encrypted.length != original.length) {
             throw new IllegalStateException("chacha20 encrypt insns failed");
         }
         instruction.setInstructionsData(encrypted);
-        outRandomAccessFile.seek(insnsOffset);
 
         return instruction;
     }

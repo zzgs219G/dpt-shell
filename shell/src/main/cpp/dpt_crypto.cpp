@@ -5,7 +5,6 @@
 #include "dpt_crypto.h"
 #include <cstring>
 #include <climits>
-#include "rc4/rc4.h"
 
 std::vector<uint8_t> hmac_sha256(const uint8_t *key,
                                  size_t key_len,
@@ -124,28 +123,5 @@ bool chacha20_crypt_insns(const uint8_t *key,
         DLOGE("chacha20 crypt failed: %d", ret);
         return false;
     }
-    return true;
-}
-
-bool rc4_crypt_insns(const uint8_t *key,
-                     uint32_t methodIdx,
-                     const uint8_t *in,
-                     size_t inlen,
-                     uint8_t *out) {
-    if (key == nullptr || in == nullptr || out == nullptr || inlen == 0) {
-        return false;
-    }
-    if (inlen > static_cast<size_t>(INT_MAX)) {
-        return false;
-    }
-
-    // Legacy v2 layout: 32-byte aes_key followed by little-endian methodIdx.
-    uint8_t rc4_key[DPT_CHACHA20_KEY_SIZE + sizeof(uint32_t)];
-    memcpy(rc4_key, key, DPT_CHACHA20_KEY_SIZE);
-    memcpy(rc4_key + DPT_CHACHA20_KEY_SIZE, &methodIdx, sizeof(methodIdx));
-
-    struct rc4_state state;
-    rc4_init(&state, rc4_key, static_cast<int>(sizeof(rc4_key)));
-    rc4_crypt(&state, in, out, static_cast<int>(inlen));
     return true;
 }

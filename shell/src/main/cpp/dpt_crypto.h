@@ -59,14 +59,4 @@ bool chacha20_crypt_insns(const uint8_t *key,
                           size_t inlen,
                           uint8_t *out);
 
-/**
- * Legacy RC4 path, kept so that OoooooOooo v2 payloads keep loading.
- * RC4 key = 32-byte aes_key followed by little-endian methodIdx.
- */
-bool rc4_crypt_insns(const uint8_t *key,
-                     uint32_t methodIdx,
-                     const uint8_t *in,
-                     size_t inlen,
-                     uint8_t *out);
-
 #endif //DPT_DPT_CRYPTO_H

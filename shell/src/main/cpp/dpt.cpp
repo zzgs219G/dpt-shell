@@ -16,7 +16,6 @@ static jobject g_realApplicationInstance = nullptr;
 static jclass g_realApplicationClass = nullptr;
 
 std::optional<std::tuple<uint8_t *,size_t>> g_codeItemFileData;
-std::unordered_map<int,std::vector<data::CodeItem *> *> dexMap;
 
 DPT_DATA_SECTION uint8_t DATA_SECTION_BITCODE[] = ".bitcode";
 DPT_DATA_SECTION uint8_t DATA_SECTION_RO_DATA[] = ".rodata";
@@ -442,34 +441,23 @@ DPT_ENCRYPT void init_app(JNIEnv *env, jclass __unused) {
 
 DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
 
-    if (data != nullptr && data_len >= 0) {
-        data::MultiDexCode *dexCode = data::MultiDexCode::getInst();
-
-        dexCode->init(data, data_len);
-        DLOGI("version = %d, dexCount = %d", dexCode->readVersion(),
-              dexCode->readDexCount());
-        int indexCount = 0;
-        uint32_t *dexCodeIndex = dexCode->readDexCodeIndex(&indexCount);
-        dexMap.reserve(indexCount);
-        for (int i = 0; i < indexCount; i++) {
-            DLOGI("dexCodeIndex[%d] = %d", i, *(dexCodeIndex + i));
-            uint32_t dexCodeOffset = *(dexCodeIndex + i);
-            uint16_t methodCount = dexCode->readUInt16(dexCodeOffset);
-
-            DLOGD("dexCodeOffset[%d] = %d, methodCount[%d] = %d", i, dexCodeOffset, i,
-                  methodCount);
-            auto codeItemVec = new std::vector<data::CodeItem *>(65536);
-            uint32_t codeItemIndex = dexCodeOffset + 2;
-            for (int k = 0; k < methodCount; k++) {
-                data::CodeItem *codeItem = dexCode->nextCodeItem(&codeItemIndex);
-                uint32_t methodIdx = codeItem->getMethodIdx();
-                codeItemVec->at(methodIdx) = codeItem;
-            }
-            dexMap.emplace(i, codeItemVec);
-
-        }
-        DLOGD("map size = %lu", (unsigned long)dexMap.size());
+    if (data == nullptr || data_len < 16) {
+        DLOGE("OoooooOooo invalid: data=%p len=%zu", data, data_len);
+        return;
     }
+
+    // v4 keeps everything in the mapped payload: patchClass binary-searches the
+    // class index on demand, so there is no per-dex 65536-entry table to build
+    // and nothing to free at teardown.
+    auto* dexCode = data::MultiDexCode::getInst();
+    dexCode->init(data, data_len);
+
+    if (!dexCode->isValid()) {
+        DLOGE("OoooooOooo rejected by init; insns will not be restored");
+        return;
+    }
+    DLOGI("OoooooOooo v4 ready: version = %d, dexCount = %d, classes = %u",
+          dexCode->getVersion(), dexCode->getDexCount(), dexCode->getClassCount());
 }
 
 DPT_ENCRYPT void read_shell_config(JNIEnv *env) {

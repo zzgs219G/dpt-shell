@@ -160,7 +160,7 @@ static int separate_dex_number(std::string &str) {
 }
 
 /**
- * 从 dex location 解析出 multidex 下标(与 dexMap 的 key 对齐)。
+ * 从 dex location 解析出 multidex 下标(与 v4 索引的 dexIdx 对齐)。
  * 兼容两种格式:
  *   旧格式: base.apk!classes2.dex  → 1   (classes.dex 主 dex → 0)
  *   新格式(Android 16/17): base.zip!4 → 4 (主 dex 无后缀 → 0)

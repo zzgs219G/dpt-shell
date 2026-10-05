@@ -29,19 +29,6 @@ public class CryptoUtils {
     }
 
     /**
-     * RC4 key for a code item: AES-256 config key followed by little-endian methodIdx.
-     */
-    public static byte[] buildInsnsRc4Key(byte[] aesKey, int methodIndex) {
-        if (aesKey == null || aesKey.length == 0) {
-            throw new IllegalArgumentException("aes key is empty");
-        }
-        ByteBuffer buf = ByteBuffer.allocate(aesKey.length + 4).order(ByteOrder.LITTLE_ENDIAN);
-        buf.put(aesKey);
-        buf.putInt(methodIndex);
-        return buf.array();
-    }
-
-    /**
      * Derive AES-256 key by HMAC-SHA256(randomKey, UTF-8(keyMaterial)).
      */
     public static byte[] hmacSha256(byte[] key, String keyMaterial) {

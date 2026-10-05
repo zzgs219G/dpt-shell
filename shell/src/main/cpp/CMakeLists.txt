@@ -13,7 +13,6 @@ set(DPT_NATIVE_SOURCE
         common/dpt_string.c
         dex/dex_file.cpp
         dex/MultiDexCode.cpp
-        dex/CodeItem.cpp
         reflect/dalvik_system_BaseDexClassLoader.cpp
         reflect/dalvik_system_DexPathList.cpp
         reflect/java_io_File.cpp

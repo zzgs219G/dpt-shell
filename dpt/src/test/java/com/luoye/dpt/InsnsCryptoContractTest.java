@@ -24,31 +24,13 @@ import java.nio.charset.StandardCharsets;
 public class InsnsCryptoContractTest {
 
     /**
-     * Header version written into OoooooOooo must be 3, because only v3 selects
-     * ChaCha20 in MultiDexCode::init. If this ever drifts, every packed APK
+     * Header version written into OoooooOooo must be 4, because only v4 is
+     * accepted by MultiDexCode::init. If this ever drifts, every packed APK
      * silently decrypts to garbage.
      */
     @Test
-    public void payloadVersionIsThree() {
-        Assert.assertEquals(3, Const.MULTI_DEX_CODE_VERSION);
-    }
-
-    /**
-     * Native builds the RC4 key with memcpy(&methodIdx), i.e. native byte order.
-     * The Java side must encode little-endian, matching buildInsnsRc4Key.
-     * This guards the legacy v2 path.
-     */
-    @Test
-    public void legacyRc4KeyLayoutUnchanged() {
-        byte[] aesKey = new byte[32];
-        for (int i = 0; i < aesKey.length; i++) {
-            aesKey[i] = (byte) i;
-        }
-        byte[] key = CryptoUtils.buildInsnsRc4Key(aesKey, 0x01020304);
-        Assert.assertEquals(36, key.length);
-        Assert.assertArrayEquals(
-                new byte[]{0x04, 0x03, 0x02, 0x01},
-                new byte[]{key[32], key[33], key[34], key[35]});
+    public void payloadVersionIsFour() {
+        Assert.assertEquals(4, Const.MULTI_DEX_CODE_VERSION);
     }
 
     /**

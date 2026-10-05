@@ -9,7 +9,6 @@
 #include <cstring>
 #include <sys/system_properties.h>
 #include <unistd.h>
-#include "dex/CodeItem.h"
 #include "common/dpt_string.h"
 #include "dpt_hook.h"
 #include "dpt_risk.h"
@@ -18,7 +17,6 @@
 
 using namespace dpt;
 
-extern std::unordered_map<int, std::vector<data::CodeItem*>*> dexMap;
 std::map<int,uint8_t *> dexMemMap;
 int g_sdkLevel = 0;
 extern ShellConfig g_shell_config;
@@ -130,58 +128,35 @@ void change_dex_protective(uint8_t * begin,int dexSize,int dexIndex){
 
 DPT_ENCRYPT
 ALWAYS_INLINE
-void patchMethod(uint8_t *begin,
-                             __unused const char *location,
-                             uint32_t dexSize,
-                             int dexIndex,
-                             uint32_t methodIdx,
-                             uint32_t codeOff) {
+void patchMethodInsns(uint8_t *begin,
+                      uint32_t methodIdx,
+                      uint32_t codeOff,
+                      const uint8_t *enc,
+                      uint32_t insnsSize) {
 
-    auto dexIt = dexMap.find(dexIndex);
-    if (LIKELY(dexIt != dexMap.end())) {
-        auto dexMemIt = dexMemMap.find(dexIndex);
-        if(UNLIKELY(dexMemIt == dexMemMap.end())){
-            change_dex_protective(begin, dexSize, dexIndex);
-        }
-
-        auto codeItemVec = dexIt->second;
-        auto codeItem = codeItemVec->at(methodIdx);
-        if (LIKELY(codeItem != nullptr)) {
-            if(codeOff == 0) {
-                NLOG("dex: %d methodIndex: %d no need patch!",dexIndex,methodIdx);
-                return;
-            }
-
-            auto *dexCodeItem = (dex::CodeItem *)(begin + codeOff);
-
-            auto *realInsnsPtr = (uint8_t *)(dexCodeItem->insns_);
-
-            NLOG("codeItem patch, methodIndex = %d, insnsSize = %d >>> %p(0x%x)",
-                 codeItem->getMethodIdx(),
-                 codeItem->getInsnsSize(),
-                 realInsnsPtr,
-                 (unsigned int)(realInsnsPtr - begin));
-
-            const uint8_t *enc = codeItem->getInsns();
-            uint32_t sz = codeItem->getInsnsSize();
-            uint32_t methodIndex = codeItem->getMethodIdx();
-
-            // The decryption routine is selected once per payload from
-            // OoooooOooo's header version (see MultiDexCode::init), so this hot
-            // path stays branch-free for both v2 (RC4) and v3 (ChaCha20).
-            auto *dexCode = data::MultiDexCode::getInst();
-            if (UNLIKELY(!dexCode->cryptInsns(g_shell_config.aes_key, methodIndex,
-                                              enc, sz, realInsnsPtr))) {
-                DLOGE("decrypt insns failed, methodIndex = %d, size = %d",
-                      methodIndex, sz);
-            }
-        }
-        else{
-            NLOG("cannot find  methodId: %d in codeitem map, dex index: %d(%s)", methodIdx, dexIndex, location);
-        }
+    if (enc == nullptr || insnsSize == 0) {
+        return;
     }
-    else{
-        DLOGW("cannot find dex: '%s' in dex map", location);
+    if (codeOff == 0) {
+        // abstract / native method: nothing to restore
+        NLOG("methodIndex = %d no need patch!", methodIdx);
+        return;
+    }
+
+    auto *dexCodeItem = (dex::CodeItem *)(begin + codeOff);
+    auto *realInsnsPtr = (uint8_t *)(dexCodeItem->insns_);
+
+    NLOG("codeItem patch, methodIndex = %d, insnsSize = %d >>> %p(0x%x)",
+         methodIdx, insnsSize, realInsnsPtr,
+         (unsigned int)(realInsnsPtr - begin));
+
+    // The decryption routine is bound once per payload in MultiDexCode::init,
+    // so this hot path does not branch on the payload version.
+    auto *dexCode = data::MultiDexCode::getInst();
+    if (UNLIKELY(!dexCode->cryptInsns(g_shell_config.aes_key, methodIdx,
+                                      enc, insnsSize, realInsnsPtr))) {
+        DLOGE("decrypt insns failed, methodIndex = %d, size = %d",
+              methodIdx, insnsSize);
     }
 }
 
@@ -227,6 +202,58 @@ static const char* getClassDescriptor(const void* dex_file, const void* dex_clas
     uint64_t utf16_length = 0;
     str_data += DexFileUtils::readUleb128(str_data, &utf16_length);
     return (const char *) str_data;
+}
+
+/**
+ * Decrypt one method's instructions back into the dex.
+ */
+DPT_ENCRYPT
+ALWAYS_INLINE
+void patchMethodInsns(uint8_t *begin,
+                      uint32_t methodIdx,
+                      uint32_t codeOff,
+                      const uint8_t *enc,
+                      uint32_t insnsSize);
+
+/**
+ * Restore one method of a class from the v4 payload.
+ *
+ * <p>{@code cursor} advances once per method walked in patchClass, i.e. in the
+ * same direct-then-virtual order that ClassData.allMethods() used when the
+ * payload was built. Keeping the two orders identical is what makes the payload's
+ * i-th record line up with the dex's i-th method; if they drift, one method's
+ * ciphertext lands in another method's body and the app breaks in ways that are
+ * very hard to trace back here.
+ *
+ * <p>The methodIdx check is a cheap guard against exactly that: it turns a silent
+ * mis-pairing into a loud log line.
+ */
+DPT_ENCRYPT
+ALWAYS_INLINE
+void patchOneClassMethod(uint8_t *begin,
+                         int dexIndex,
+                         const data::ClassIndexEntry *entry,
+                         uint16_t *cursor,
+                         const dex::ClassDataMethod &method) {
+    if (entry == nullptr || *cursor >= entry->methodCount) {
+        return;
+    }
+
+    auto *dexCode = data::MultiDexCode::getInst();
+    auto view = dexCode->getMethodData(entry, *cursor);
+    (*cursor)++;
+
+    if (view.encryptedInsns == nullptr) {
+        return;
+    }
+    if (view.methodIdx != method.method_idx_delta_) {
+        DLOGE("payload order mismatch: dex=%d code=%u payload=%u",
+              dexIndex, method.method_idx_delta_, view.methodIdx);
+        return;
+    }
+
+    patchMethodInsns(begin, view.methodIdx, method.code_off_,
+                     view.encryptedInsns, view.insnsSize);
 }
 
 DPT_ENCRYPT void patchClass(const char* descriptor,
@@ -278,6 +305,18 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
             NLOG("class_desc = '%s', class_idx_ = 0x%x, class data off = 0x%x",descriptor,class_def->class_idx_,class_def->class_data_off_);
 
             if(LIKELY(class_def->class_data_off_ != 0)) {
+                auto *dexCode = data::MultiDexCode::getInst();
+                const auto *entry = dexCode->findClassIndex(
+                        (uint8_t) dexIndex, class_def->class_data_off_);
+                if (UNLIKELY(entry == nullptr)) {
+                    // Class was not protected (excluded by rules, or a new class).
+                    return;
+                }
+
+                // One binary search per class replaces the old per-method lookup
+                // into a 65536-entry table.
+                uint16_t entryCursor = 0;
+
                 size_t read = 0;
                 auto *class_data = (uint8_t *) ((uint8_t *) begin + class_def->class_data_off_);
 
@@ -308,15 +347,13 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                                                   virtual_methods_size);
 
                 for (uint64_t i = 0; i < direct_methods_size; i++) {
-                    auto method = directMethods[i];
-                    patchMethod(begin, location.c_str(), dexSize, dexIndex,
-                                method.method_idx_delta_, method.code_off_);
+                    patchOneClassMethod(begin, dexIndex, entry, &entryCursor,
+                                        directMethods[i]);
                 }
 
                 for (uint64_t i = 0; i < virtual_methods_size; i++) {
-                    auto method = virtualMethods[i];
-                    patchMethod(begin, location.c_str(), dexSize, dexIndex,
-                                method.method_idx_delta_, method.code_off_);
+                    patchOneClassMethod(begin, dexIndex, entry, &entryCursor,
+                                        virtualMethods[i]);
                 }
 
                 delete[] directMethods;

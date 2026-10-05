@@ -28,7 +28,6 @@
 #include "rc4/rc4.h"
 #include "dpt_hook.h"
 #include "dex/MultiDexCode.h"
-#include "dex/CodeItem.h"
 
 #include "reflect/dalvik_system_BaseDexClassLoader.h"
 #include "reflect/dalvik_system_DexPathList.h"

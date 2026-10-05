@@ -64,12 +64,23 @@ public class Const {
     public static final String ROOT_OF_OUT_DIR = System.getProperty("java.io.tmpdir");
 
     // OoooooOooo payload version.
-    //   2 = instructions encrypted with RC4 (legacy)
-    //   3 = instructions encrypted with ChaCha20
-    // The runtime picks the decryption routine from this field, so a v2 payload
-    // still loads. Keep in sync with DPT_MULTI_DEX_CODE_VERSION_V2/V3 in
-    // shell/src/main/cpp/dex/MultiDexCode.h.
-    public static final short MULTI_DEX_CODE_VERSION = 3;
+    //   4 = instructions encrypted with ChaCha20, plus a per-class index so the
+    //       runtime can find a class's methods by (dexIdx, classDataOff) instead
+    //       of allocating a 65536-entry table per dex. Layout:
+    //       see docs/phase1-perf-plan.md, Task 1.1.
+    // The runtime rejects anything but v4, so this constant and
+    // DPT_MULTI_DEX_CODE_VERSION_V4 in
+    // shell/src/main/cpp/dex/MultiDexCode.h must be changed together.
+    public static final short MULTI_DEX_CODE_VERSION_V4 = 4;
+    public static final short MULTI_DEX_CODE_VERSION = MULTI_DEX_CODE_VERSION_V4;
+
+    // 'OOO4' as a little-endian uint32. The runtime compares this before
+    // trusting any offset in the payload.
+    public static final int MULTI_DEX_CODE_MAGIC = 0x4F4F4F34;
+
+    // Byte sizes fixed by the v4 layout.
+    public static final int MULTI_DEX_CODE_HEADER_SIZE = 16;
+    public static final int MULTI_DEX_CODE_CLASS_INDEX_ENTRY_SIZE = 16;
 
     public static final String RC4_KEY_SYMBOL = "DPT_UNKNOWN_DATA";
 
