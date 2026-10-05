@@ -298,6 +298,11 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
             dexSize = dexFileV21->size_ == 0 ? dexFileV21->header_->file_size_ : dexFileV21->size_;
         }
 
+        if(UNLIKELY(begin == nullptr || dexSize == 0)) {
+            DLOGW("bad dex file: begin=%p size=%llu", begin, (unsigned long long)dexSize);
+            return;
+        }
+
         if(location.rfind(DEXES_ZIP_NAME) != std::string::npos && dex_class_def){
             int dexIndex = parse_dex_number(location);
 
