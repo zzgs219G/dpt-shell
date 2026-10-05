@@ -207,7 +207,6 @@ void patchMethodInsns(uint8_t *begin,
 DPT_ENCRYPT
 ALWAYS_INLINE
 void patchOneClassMethod(uint8_t *begin,
-                         int dexIndex,
                          const data::ClassIndexEntry *entry,
                          uint16_t *cursor,
                          const dex::ClassDataMethod &method) {
@@ -223,8 +222,11 @@ void patchOneClassMethod(uint8_t *begin,
         return;
     }
     if (view.methodIdx != method.method_idx_delta_) {
-        DLOGE("payload order mismatch: dex=%d code=%u payload=%u",
-              dexIndex, method.method_idx_delta_, view.methodIdx);
+        // No dex index here: entry->dexIdx already identifies the dex, and pulling
+        // it from the ClassIndexEntry avoids a parameter that the success path
+        // never reads (-Wunused-parameter is fatal in CI).
+        DLOGE("payload order mismatch: dex=%u code=%u payload=%u",
+              entry->dexIdx, method.method_idx_delta_, view.methodIdx);
         return;
     }
 
@@ -328,12 +330,12 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                                                   virtual_methods_size);
 
                 for (uint64_t i = 0; i < direct_methods_size; i++) {
-                    patchOneClassMethod(begin, dexIndex, entry, &entryCursor,
+                    patchOneClassMethod(begin, entry, &entryCursor,
                                         directMethods[i]);
                 }
 
                 for (uint64_t i = 0; i < virtual_methods_size; i++) {
-                    patchOneClassMethod(begin, dexIndex, entry, &entryCursor,
+                    patchOneClassMethod(begin, entry, &entryCursor,
                                         virtualMethods[i]);
                 }
 
