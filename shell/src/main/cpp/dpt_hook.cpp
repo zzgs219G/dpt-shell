@@ -128,7 +128,8 @@ const char *GetClassLinkerDefineClassLibPath(){
  * <p>Called once per dex: the memo keeps the mprotect off the per-method path,
  * which matters because this runs while ART holds the class-loader lock.
  */
-static void change_dex_protective(uint8_t *begin, uint64_t dexSize, int dexIndex) {
+static void change_dex_protective(uint8_t *begin, uint64_t dexSize,
+                                  int dexIndex __attribute__((unused))) {
     if (begin == nullptr || dexSize == 0) {
         DLOGW("skip mprotect dex[%d], begin=%p, dexSize=%llu",
               dexIndex, begin, (unsigned long long)dexSize);
