@@ -2,6 +2,7 @@
 // Created by luoyesiqiu
 //
 
+#include <map>
 #include <string>
 #include <cstring>
 #include <sys/system_properties.h>
@@ -13,6 +14,11 @@
 #include "bytehook.h"
 
 using namespace dpt;
+
+// Dex indices whose mapping has already been made writable by
+// change_dex_protective. Kept as a memo so the mprotect happens once per dex
+// rather than once per method -- patchClass runs under the class-loader lock.
+static std::map<int, uint8_t *> dexMemMap;
 
 int g_sdkLevel = 0;
 extern ShellConfig g_shell_config;
@@ -100,6 +106,45 @@ const char *GetArtLibPath() {
 
 const char *GetClassLinkerDefineClassLibPath(){
     return GetArtLibPath();
+}
+
+/**
+ * Make the dex mapping writable, once per dex.
+ *
+ * <p>Restoring instructions means writing plaintext back into the dex that ART
+ * mapped read-only. This has to be done explicitly: ART relies on the mapping
+ * staying read-only so that a partially-verified dex can never be observed
+ * half-patched by another thread.
+ *
+ * <p>This used to be called from patchMethod on every method (guarded by a
+ * dexMemMap memo), and was deleted in 0af9fbf as "dead code" once the v4 rewrite
+ * moved the write into patchMethodInsns. That deletion also removed the only
+ * thing guaranteeing the pages were writable, leaving patchMethodInsns to depend
+ * entirely on hook_mmap having added PROT_WRITE to whatever mmap ART happened to
+ * use. That is not guaranteed -- newer ART releases do not always go through the
+ * hooked libc mmap -- so on those devices the restore faults writing to a
+ * read-only page, inside ClassLinker::DefineClass.
+ *
+ * <p>Called once per dex: the memo keeps the mprotect off the per-method path,
+ * which matters because this runs while ART holds the class-loader lock.
+ */
+static void change_dex_protective(uint8_t *begin, uint64_t dexSize, int dexIndex) {
+    if (begin == nullptr || dexSize == 0) {
+        DLOGW("skip mprotect dex[%d], begin=%p, dexSize=%llu",
+              dexIndex, begin, (unsigned long long)dexSize);
+        return;
+    }
+
+    for (int i = 0; i < 10;) {
+        int ret = dpt_mprotect(begin, begin + dexSize, PROT_READ | PROT_WRITE);
+        if (ret != 0) {
+            DLOGE("mprotect fail, dex[%d] address: %p, reason: %d!", dexIndex, begin, ret);
+            i++;
+        } else {
+            DLOGD("mprotect success, dex[%d] address: %p.", dexIndex, begin);
+            break;
+        }
+    }
 }
 
 DPT_ENCRYPT
@@ -303,6 +348,16 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
             NLOG("class_desc = '%s', class_idx_ = 0x%x, class data off = 0x%x",descriptor,class_def->class_idx_,class_def->class_data_off_);
 
             if(LIKELY(class_def->class_data_off_ != 0)) {
+                // Restoring instructions writes into the dex mapping, which ART
+                // mapped read-only. Make it writable once per dex before the
+                // first patch. hook_mmap's PROT_WRITE upgrade is not a substitute:
+                // it only covers dexes mapped through the hooked libc mmap.
+                auto dexMemIt = dexMemMap.find(dexIndex);
+                if(UNLIKELY(dexMemIt == dexMemMap.end())) {
+                    change_dex_protective(begin, dexSize, dexIndex);
+                    dexMemMap.insert(std::pair<int,uint8_t *>(dexIndex, begin));
+                }
+
                 auto *dexCode = data::MultiDexCode::getInst();
                 const auto *entry = dexCode->findClassIndex(
                         (uint8_t) dexIndex, class_def->class_data_off_);
