@@ -156,4 +156,6 @@ executable/
   - nonce = `methodIdx` 的 12 字节 LE 编码（低 4 字节有效）
   - counter 从 0；保留 v2 RC4 分支供调试回退（按 header.version 分发）
   - 载荷版本 `MULTI_DEX_CODE_VERSION` 2 → 3
-- 后续任务与设计见 `docs/agent-development-plan.md`
+- 后续任务与设计见 `docs/phase1-progress.md`（执行进度与交接）
+  与 `docs/phase1-perf-plan.md`（性能优化方案，唯一执行依据）
+- v1.0.1~1.0.3 启动闪退的根因与修复见 `docs/启动闪退根因分析.md`
