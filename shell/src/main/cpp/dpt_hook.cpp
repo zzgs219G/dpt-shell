@@ -201,8 +201,17 @@ void patchMethodInsns(uint8_t *begin,
  * ciphertext lands in another method's body and the app breaks in ways that are
  * very hard to trace back here.
  *
- * <p>The methodIdx check is a cheap guard against exactly that: it turns a silent
- * mis-pairing into a loud log line.
+ * <p>The packing side guarantees the pairing by emitting exactly one record per
+ * method walked, including a zero-length placeholder for methods it does not
+ * protect (abstract/native, shared code_item). That is why an absent record here
+ * can only mean a corrupt payload.
+ *
+ * <p>The methodIdx check is the last line of defence: it is what keeps a corrupted
+ * or desynchronised payload from writing one method's ciphertext into another
+ * method's body. It cannot repair the desynchronisation -- when it trips, every
+ * later method of this class is off by one too and stays unrestored -- but it does
+ * confine the damage to "these methods keep their filler bytes" rather than
+ * "this class is silently rewritten with someone else's instructions".
  */
 DPT_ENCRYPT
 ALWAYS_INLINE
@@ -219,9 +228,15 @@ void patchOneClassMethod(uint8_t *begin,
     (*cursor)++;
 
     if (view.encryptedInsns == nullptr) {
+        // Zero-length placeholder: the packing side deliberately left this method
+        // unprotected. Nothing to restore.
         return;
     }
     if (view.methodIdx != method.method_idx_delta_) {
+        // Desynchronised. Do NOT patch: writing here would corrupt this method
+        // with a different method's ciphertext, and ART verifies the dex while
+        // defining the class, so that surfaces as a VerifyError or SIGSEGV inside
+        // ClassLinker::DefineClass rather than as anything traceable to this file.
         // No dex index here: entry->dexIdx already identifies the dex, and pulling
         // it from the ClassIndexEntry avoids a parameter that the success path
         // never reads (-Wunused-parameter is fatal in CI).

@@ -311,6 +311,11 @@ public class DexUtils {
                 for (ClassData.Method method : methods) {
                     if(getCodeOffAppearCount(dexNumber, method.getCodeOffset()) > 1) {
                         LogUtils.noisy("codeoff 0x%x appear many times", method.getCodeOffset());
+                        // A shared code_item is protected once, under one methodIdx.
+                        // The runtime still walks THIS method, so it must consume a
+                        // record -- otherwise every later method of the class is
+                        // shifted and gets the wrong ciphertext. Emit a placeholder.
+                        instructionList.add(placeholderInstruction(classDef, method));
                         continue;
                     }
 
@@ -357,11 +362,37 @@ public class DexUtils {
     }
 
     /**
+     * Build a placeholder record for a method that is <b>not</b> protected.
+     *
+     * <p>The v4 payload pairs a class's ciphertext to its methods <b>positionally</b>:
+     * the runtime walks the class's methods in ClassData order and consumes one
+     * MethodData record per method walked, in order. A method that produces no
+     * record therefore does not merely skip itself -- it shifts every later method
+     * of the same class by one, so each one ends up with the previous method's
+     * ciphertext written into its body. That corrupts the dex and the app dies
+     * before its first Activity.
+     *
+     * <p>So every method the runtime walks must produce exactly one record. This
+     * one carries the right methodIdx and an empty payload; the runtime's
+     * {@code patchMethodInsns} returns immediately on {@code insnsSize == 0}, so
+     * nothing is written and the method body stays untouched.
+     */
+    private static Instruction placeholderInstruction(ClassDef classDef,
+                                                     ClassData.Method method) {
+        Instruction instruction = new Instruction();
+        instruction.setMethodIndex(method.getMethodIndex());
+        instruction.setClassDataOff(classDef.getClassDataOffset());
+        instruction.setInstructionDataSize(0);
+        instruction.setInstructionsData(new byte[0]);
+        return instruction;
+    }
+
+    /**
      * Extract a method code
      * @param dex dex struct
      * @param outRandomAccessFile out file
      * @param method will extract method
-     * @return a insns
+     * @return a insns, or a placeholder when the method has nothing to extract
      */
     private static Instruction extractMethod(Dex dex,
                                              RandomAccessFile outRandomAccessFile,
@@ -378,7 +409,9 @@ public class DexUtils {
                     TypeUtils.getHumanizeTypeName(className),
                     methodName,
                     TypeUtils.getHumanizeTypeName(returnTypeName));
-            return null;
+            // Still emit a record: the runtime walks this method, so it must consume
+            // one. See placeholderInstruction for why an absent record is fatal.
+            return placeholderInstruction(classDef, method);
         }
         Instruction instruction = new Instruction();
         // CodeItem size = registers_size + ins_size + outs_size + tries_size + debug_info_off + insns_size = 16
@@ -390,7 +423,7 @@ public class DexUtils {
                     TypeUtils.getHumanizeTypeName(className),
                     methodName,
                     TypeUtils.getHumanizeTypeName(returnTypeName));
-            return null;
+            return placeholderInstruction(classDef, method);
         }
         int insnsCapacity = code.getInstructions().length;
         //The insns capacity is not enough to store the return statement, skip it
@@ -404,7 +437,7 @@ public class DexUtils {
                     insnsCapacity * 2,
                     returnByteCodes.length);
 
-            return null;
+            return placeholderInstruction(classDef, method);
         }
         //Here, MethodIndex corresponds to the index of the method_ids area
         instruction.setMethodIndex(method.getMethodIndex());
@@ -533,7 +566,7 @@ public class DexUtils {
             mergedDex.writeTo(dstDexFile);
             return true;
         }
-        catch (Exception ignored) {
+        catch (Throwable ignored) {
         }
         return false;
     }
