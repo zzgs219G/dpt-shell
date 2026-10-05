@@ -130,20 +130,26 @@ dpt::data::CodeItemView dpt::data::MultiDexCode::getMethodData(const ClassIndexE
     // Walk forward past the preceding records. Records are variable length, so
     // this cannot be indexed directly; the loop is bounded by methodCount, which
     // is small (tens) for a real class.
+    //
+    // methodDataOff is relative to the methodData section, so every bound below
+    // must be measured against the bytes available *after* methodDataOffset --
+    // not against the whole payload size. Comparing the relative offset with the
+    // total size silently under-checks and lets readUInt16At run past the buffer.
     const uint8_t* base = m_buffer + m_methodDataOffset;
+    const size_t avail = m_size - m_methodDataOffset;
     size_t off = entry->methodDataOff;
     for (uint16_t i = 0; i < index; i++) {
-        if (off + 6 > m_size) return view;
+        if (off + 6 > avail) return view;
         uint16_t sz = readUInt16At(base, off + 4);
         // insnsSize is a BYTE count: advancing by 6 + sz, not 6 + sz * 2.
         off += 6u + sz;
-        if (off > m_size) return view;
+        if (off > avail) return view;
     }
 
-    if (off + 6 > m_size) return view;
-    // A record must fit entirely inside the payload.
+    if (off + 6 > avail) return view;
+    // A record must fit entirely inside the methodData section.
     uint16_t insnsSize = readUInt16At(base, off + 4);
-    if (off + 6u + insnsSize > m_size) return view;
+    if (off + 6u + insnsSize > avail) return view;
 
     view.methodIdx = readUInt32At(base, off);
     view.insnsSize = insnsSize;
