@@ -37,9 +37,42 @@ jobs:
       run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
     - name: Compress files
       run:  zip -r -q dpt-shell-${{ steps.get_latest_tag_name.outputs.VERSION }}.zip executable/
+    - name: Collect native debug symbols
+      id: collect_symbols
+      run: |
+        SYMBOLS_ZIP="shell/build/outputs/native-debug-symbols/release/native-debug-symbols.zip"
+        if [ -f "$SYMBOLS_ZIP" ]; then
+          cp "$SYMBOLS_ZIP" "dpt-shell-${{ steps.get_latest_tag_name.outputs.VERSION }}-native-debug-symbols.zip"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        else
+          # Do not fail the release: the executable zip is still valid, and a
+          # hard failure here would burn a full build on every tag push. Warn
+          # loudly and print where the file actually landed so it can be fixed.
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::native-debug-symbols.zip not found at $SYMBOLS_ZIP; release will ship without symbols"
+          find shell/build/outputs -name 'native-debug-symbols.zip' || true
+        fi
+    - name: Assemble release file list
+      id: release_files
+      run: |
+        # Only list the symbols zip when it exists: a path listed in the
+        # release action's `files:` input that does not exist can fail the
+        # whole release, which is exactly what the non-fatal collect step
+        # above is trying to avoid. Joined explicitly so the list does not
+        # depend on how YAML strips block-scalar indentation.
+        FILES="dpt-shell-${{ steps.get_latest_tag_name.outputs.VERSION }}.zip"
+        if [ "${{ steps.collect_symbols.outputs.found }}" = "true" ]; then
+          FILES="${FILES}"$'\n'"dpt-shell-${{ steps.get_latest_tag_name.outputs.VERSION }}-native-debug-symbols.zip"
+        else
+          echo "::warning::this release ships WITHOUT native debug symbols; crashes from it cannot be symbolized"
+        fi
+        {
+          echo 'files<<EOF'
+          printf '%s\n' "$FILES"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
     - uses: "marvinpinto/action-automatic-releases@latest"
       with:
         repo_token: "${{ secrets.GITHUB_TOKEN }}"
         prerelease: false
-        files: |
-          dpt-shell-${{ steps.get_latest_tag_name.outputs.VERSION }}.zip
+        files: ${{ steps.release_files.outputs.files }}

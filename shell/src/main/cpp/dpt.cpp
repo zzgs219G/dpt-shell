@@ -288,6 +288,11 @@ void init_dpt() {
 #endif
     DLOGI("call!");
 
+    // Crash diagnostics: install before dpt_hook() -> before bytehook_init(),
+    // so bhook keeps its own SIGSEGV/SIGBUS handler and forwards to ours only
+    // for faults it does not consume. See dpt_hook.cpp.
+    dpt_install_crash_handler();
+
     dpt_hook();
 }
 

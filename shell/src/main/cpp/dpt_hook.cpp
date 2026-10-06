@@ -5,6 +5,9 @@
 #include <set>
 #include <string>
 #include <cstring>
+#include <signal.h>
+#include <errno.h>
+#include <sys/syscall.h>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -66,6 +69,212 @@ static bool is_shell_dex_location(const std::string &location, const uint8_t *be
 
 const char *GetArtLibPath();
 const char *GetClassLinkerDefineClassLibPath();
+
+// ---------------------------------------------------------------------------
+// Crash diagnostics (SIGSEGV/SIGBUS).
+//
+// A crash inside the instruction-restore path used to surface as a bare
+// `#00 pc 0x5c18c` with no state, and the symbolization step (see
+// build.gradle debugSymbolLevel / release.yml) only recovers the *function*.
+// These variables answer the other half: which dex, and whether the RW window
+// was expected to be open.
+//
+// Diagnostics read from a signal handler. thread_local is deliberate: the
+// thread that faults inside patchMethodInsns is the same one that ran
+// patchClass, so its slot is already allocated by the time we read it (see
+// dpt_install_crash_handler for the pre-touch that covers the install thread).
+// POD, never std::string -- the reader must not touch the heap.
+static thread_local char g_last_location[128] = {0};
+static thread_local int g_last_restore_read = -1;
+static thread_local long g_last_method_idx = -1;
+static thread_local int g_last_mprotect = -1;
+
+// Guards against re-entering the handler. Deliberately a plain global rather
+// than thread_local: it is first written *from inside* the handler, and a
+// thread that never ran patchClass would take a TLS allocation there.
+static volatile sig_atomic_t g_in_crash_handler = 0;
+
+static struct sigaction g_prev_sigsegv;
+static struct sigaction g_prev_sigbus;
+
+// Async-signal-safe integer formatter: no printf, no allocation.
+static int dpt_sig_append(char *dst, int off, int cap, const char *s) {
+    while (off < cap - 1 && *s != '\0') {
+        dst[off++] = *s++;
+    }
+    return off;
+}
+
+static int dpt_sig_append_int(char *dst, int off, int cap, long value) {
+    char tmp[24];
+    int n = 0;
+    const bool negative = value < 0;
+    // Two's-complement negation via unsigned: -LONG_MIN is UB on long, but
+    // 0UL - (unsigned long) value is well defined.
+    unsigned long uvalue = negative ? (0UL - (unsigned long) value)
+                                    : (unsigned long) value;
+    if (uvalue == 0) {
+        tmp[n++] = '0';
+    }
+    while (uvalue > 0 && n < (int) sizeof(tmp)) {
+        tmp[n++] = (char) ('0' + (uvalue % 10));
+        uvalue /= 10;
+    }
+    if (negative && off < cap - 1) {
+        dst[off++] = '-';
+    }
+    while (n > 0 && off < cap - 1) {
+        dst[off++] = tmp[--n];
+    }
+    return off;
+}
+
+static int dpt_sig_append_hex(char *dst, int off, int cap, unsigned long long value) {
+    static const char digits[] = "0123456789abcdef";
+    char tmp[16];
+    int n = 0;
+    if (value == 0) {
+        tmp[n++] = '0';
+    }
+    while (value > 0 && n < (int) sizeof(tmp)) {
+        tmp[n++] = digits[value & 0xf];
+        value >>= 4;
+    }
+    off = dpt_sig_append(dst, off, cap, "0x");
+    while (n > 0 && off < cap - 1) {
+        dst[off++] = tmp[--n];
+    }
+    return off;
+}
+
+// Formats and emits the one diagnostic line. Kept free of printf/malloc/
+// std::string and of any heap or TLS access on the read path. Note that
+// __android_log_write() is not strictly POSIX async-signal-safe -- it is used
+// because the alternative (write(2)) is invisible for an Android app, whose
+// stderr goes to /dev/null. A fault inside liblog would cost this line, but not
+// the tombstone, because we forward afterwards.
+static void dpt_crash_log_state(int signum, const siginfo_t *info) {
+    char buf[384];
+    int off = 0;
+    const int cap = (int) sizeof(buf);
+
+    off = dpt_sig_append(buf, off, cap, "SIG");
+    off = dpt_sig_append_int(buf, off, cap, signum);
+    off = dpt_sig_append(buf, off, cap, " addr=");
+    off = dpt_sig_append_hex(buf, off, cap,
+                             (unsigned long long) (uintptr_t) info->si_addr);
+    off = dpt_sig_append(buf, off, cap, " code=");
+    off = dpt_sig_append_int(buf, off, cap, info->si_code);
+    off = dpt_sig_append(buf, off, cap, " loc=");
+    off = dpt_sig_append(buf, off, cap, g_last_location);
+    off = dpt_sig_append(buf, off, cap, " restoreRead=");
+    off = dpt_sig_append_int(buf, off, cap, g_last_restore_read);
+    off = dpt_sig_append(buf, off, cap, " mprotect=");
+    off = dpt_sig_append_int(buf, off, cap, g_last_mprotect);
+    off = dpt_sig_append(buf, off, cap, " methodIdx=");
+    off = dpt_sig_append_int(buf, off, cap, g_last_method_idx);
+    off = dpt_sig_append(buf, off, cap, "\n");
+    // Every append stops at cap-1, so buf[off] is always inside the array; make
+    // the terminator explicit for __android_log_write's C-string contract.
+    if (off > cap - 1) {
+        off = cap - 1;
+    }
+    buf[off] = '\0';
+
+    __android_log_write(ANDROID_LOG_FATAL, TAG, buf);
+}
+
+static void dpt_crash_handler(int signum, siginfo_t *info, void *context) {
+    // Log once per fault. The guard is set before formatting so a fault while
+    // formatting cannot recurse, and cleared after the forward below so that a
+    // fault ART recovers from (implicit null-check) does not permanently
+    // suppress the diagnostic line for every later crash.
+    const bool shouldLog = (g_in_crash_handler == 0);
+    if (shouldLog) {
+        g_in_crash_handler = 1;
+        dpt_crash_log_state(signum, info);
+    }
+
+    // Hand the signal to whoever held it before us, so debuggerd still produces
+    // its tombstone (registers, backtrace, the whole crash.log) and the process
+    // dies the way it would have without us. This is why we forward instead of
+    // _exit(): exiting here would suppress the tombstone we are trying to
+    // enrich.
+    //
+    // Chain notes, from reading the sources:
+    //   * we register through the plain sigaction(), which ART's sigchain
+    //     proxies, so our handler sits *inside* the sigchain;
+    //   * bhook (bytehook_init, called later by dpt_hook) registers through
+    //     sigaction resolved with dlsym(libc), i.e. it bypasses the sigchain and
+    //     writes the kernel slot directly (bytesig.c: bytesig_real_sigaction);
+    //   * installing before bytehook_init therefore leaves bhook on the outside:
+    //     it gets the first look, and only forwards to us for faults it does not
+    //     consume -- so BYTESIG_TRY keeps working and we still see real crashes.
+    // Installing after bytehook_init would invert that ordering.
+    //
+    // The exact dispatch order through ART's sigchain is inferred from those
+    // sources and is NOT verified on device; see docs/进度与交接.md.
+    const struct sigaction *prev = (signum == SIGBUS) ? &g_prev_sigbus : &g_prev_sigsegv;
+    if ((prev->sa_flags & SA_SIGINFO) != 0 && prev->sa_sigaction != nullptr) {
+        prev->sa_sigaction(signum, info, context);
+    } else if (prev->sa_handler == SIG_DFL || prev->sa_handler == nullptr) {
+        // Restore the default action and re-raise so debuggerd sees a real
+        // crash. tgkill targets this thread: a process-directed kill could
+        // deliver to another thread and make the tombstone name the wrong one.
+        // syscall() is used because tgkill/gettid need not be declared by the
+        // headers we include; bhook resolves them the same way (bytesig.c).
+        struct sigaction dfl{};
+        dfl.sa_handler = SIG_DFL;
+        sigemptyset(&dfl.sa_mask);
+        sigaction(signum, &dfl, nullptr);
+        syscall(__NR_tgkill, getpid(), syscall(__NR_gettid), signum);
+    } else if (prev->sa_handler != SIG_IGN) {
+        prev->sa_handler(signum);
+    }
+
+    // Reached only if the forwarded action returned without killing the
+    // process -- i.e. something recovered the fault (ART's implicit null-check
+    // handler, or a bhook siglongjmp). Clear the guard so a later real crash
+    // still logs. On a genuinely fatal fault we never get here, which is fine:
+    // the process is already going down with the line already written.
+    if (shouldLog) {
+        g_in_crash_handler = 0;
+    }
+}
+
+void dpt_install_crash_handler() {
+    // Pre-touch the thread_local diagnostics so this thread's TLS block is
+    // allocated here, on a normal stack, instead of from inside the handler
+    // (bionic resolves a dlopen'd module's TLS through __tls_get_addr, which
+    // may call calloc -- not async-signal-safe).
+    //
+    // This covers the install thread only. A fault on some OTHER thread that
+    // ran patchClass is equally safe (patchClass wrote these), but a thread
+    // that never ran patchClass -- e.g. one created before this SO loaded --
+    // can still take the TLS allocation inside the handler. That residual gap
+    // is accepted; see docs/进度与交接.md §11.4.
+    g_last_restore_read = -1;
+    g_last_mprotect = -1;
+    g_last_method_idx = -1;
+    g_last_location[0] = '\0';
+
+    struct sigaction sa{};
+    sa.sa_sigaction = dpt_crash_handler;
+    // SA_ONSTACK is inert here: we run from ART's sigchain, not the kernel
+    // slot, and no altstack is installed. Harmless, and correct if that ever
+    // changes. A stack-overflow SIGSEGV is therefore still not logged.
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+
+    // Installed before dpt_hook() -> before bytehook_init(). See the chain notes
+    // in dpt_crash_handler for why the ordering matters.
+    if (sigaction(SIGSEGV, &sa, &g_prev_sigsegv) != 0) {
+        ELOG("install SIGSEGV handler failed: %d", errno);
+    }
+    if (sigaction(SIGBUS, &sa, &g_prev_sigbus) != 0) {
+        ELOG("install SIGBUS handler failed: %d", errno);
+    }
+}
 
 void dpt_hook() {
     bytehook_init(BYTEHOOK_MODE_AUTOMATIC,false);
@@ -478,6 +687,21 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                     const bool restoreRead =
                             is_file_dex_location(location);
 
+                    // Crash diagnostics: record the state the fault handler
+                    // reports. Assignment only -- no branch, no control flow.
+                    g_last_restore_read = restoreRead ? 1 : 0;
+                    g_last_mprotect = restoreRead ? 0 : -1;
+                    // Reached only inside if (!patches.empty()). Note this is
+                    // the FIRST method collected for the class, not necessarily
+                    // the one being patched when a fault happens.
+                    g_last_method_idx = (long) patches.front().methodIdx;
+                    {
+                        const char *loc = location.c_str();
+                        size_t n = strnlen(loc, sizeof(g_last_location) - 1);
+                        memcpy(g_last_location, loc, n);
+                        g_last_location[n] = '\0';
+                    }
+
                     // Merge the sorted pages into runs and mprotect each run,
                     // rather than the first-to-last span: the span would also
                     // open pages between two unrelated runs, widening the
@@ -498,6 +722,9 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                         if (restoreRead &&
                             UNLIKELY(dpt_mprotect((void *) segStart, (void *) segEnd,
                                                   PROT_READ | PROT_WRITE) != 0)) {
+                            // Crash diagnostics: the RW window never opened for
+                            // this class; a later fault here is expected.
+                            g_last_mprotect = -2;
                             // All or nothing: undo the segments already opened and
                             // leave every method of this class encrypted, rather
                             // than restoring only part of it.
@@ -531,10 +758,17 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                         }
 
                         if (restoreRead) {
+                            // Crash diagnostics: entering here means the RW
+                            // window is about to close. 1 = closed (or closing);
+                            // -3 = the restore to PROT_READ failed, so a fault
+                            // after this point means the mapping was still
+                            // writable.
+                            g_last_mprotect = 1;
                             for (const auto &segment : segments) {
                                 if (UNLIKELY(dpt_mprotect((void *) segment.first,
                                                           (void *) segment.second,
                                                           PROT_READ) != 0)) {
+                                    g_last_mprotect = -3;
                                     ELOG("mprotect READ restore fail: dex=%d page="
                                          FMT_POINTER, dexIndex, segment.first);
                                 }

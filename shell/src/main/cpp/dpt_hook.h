@@ -20,6 +20,11 @@
 
 void dpt_hook();
 
+// Crash diagnostics only: installs the SIGSEGV/SIGBUS handler that dumps the
+// last patchClass state. Must be called before dpt_hook(), i.e. before
+// bytehook_init() installs bhook's own handler -- see dpt_hook.cpp.
+void dpt_install_crash_handler();
+
 static void* (*g_originDefineClassV22)(void* thiz,
         void* self,
         const char* descriptor,

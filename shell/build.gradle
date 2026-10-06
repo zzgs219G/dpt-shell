@@ -40,6 +40,15 @@ android {
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // Keep the native debug symbols out of the packaged SO but emit them
+            // as shell/build/outputs/native-debug-symbols/release/native-debug-symbols.zip,
+            // which release.yml ships next to the executable zip. The SO name is
+            // regenerated on every build (see root build.gradle), so a crash log
+            // from an older release can only be symbolized against that release's
+            // own symbols -- they have to be published, not rebuilt.
+            ndk {
+                debugSymbolLevel 'FULL'
+            }
         }
 
         debug {
