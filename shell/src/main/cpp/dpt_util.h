@@ -24,6 +24,10 @@
 #include <iostream>
 #include <sstream>
 #include <iomanip>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 
 #include <mz_zip.h>
@@ -78,5 +82,20 @@ void printTime(const char* msg,clock_t start);
 const char* getThreadName();
 
 std::string to_hex(const uint8_t* data, size_t length);
+
+namespace dpt {
+    // Per-page locks guarding the RW window used when restoring instructions
+    // (Task 1.5). patchClass locks every page it is about to write before
+    // flipping it writable, so two threads restoring different classes that
+    // share a page serialize instead of racing on mprotect.
+    //
+    // NOTE: the table grows monotonically for the lifetime of the process --
+    // one entry per page ever touched, never erased. The page count is bounded
+    // by the size of the shell dexes (thousands of pages at most), so the
+    // memory cost is accepted; see docs/进度与交接.md Task 1.5.
+    extern std::unordered_map<uintptr_t, std::unique_ptr<std::mutex>> g_pageLocks;
+    extern std::mutex g_pageLockTableMutex;
+    std::mutex& getPageLock(uintptr_t pageAddr);
+}
 
 #endif //DPT_DPT_UTIL_H

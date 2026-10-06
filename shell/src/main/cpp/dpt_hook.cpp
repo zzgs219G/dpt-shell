@@ -5,6 +5,13 @@
 #include <set>
 #include <string>
 #include <cstring>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include <sys/system_properties.h>
 #include <unistd.h>
 #include "common/dpt_string.h"
@@ -15,13 +22,20 @@
 
 using namespace dpt;
 
-// Dex mappings already made writable by change_dex_protective, keyed by the
-// mapping address. Kept as a memo so the mprotect happens once per dex rather
-// than once per method -- patchClass runs under the class-loader lock. Keyed
-// by address (not dex index) because the location gate below admits two
-// different dexes that both parse to index 0 (e.g. a file dex and an
-// in-memory dex), and a shared key would leave one of them read-only.
-static std::set<uint8_t *> dexMemMap;
+// Page-level locks for Task 1.5: patchClass takes a lock on every page it
+// touches before making it writable, so concurrent class loading of the same
+// dex serializes instead of racing on mprotect. The table grows monotonically
+// (one entry per page ever touched); the page count is bounded by the dex
+// size, so this is acceptable for a process-lifetime table.
+std::unordered_map<uintptr_t, std::unique_ptr<std::mutex>> dpt::g_pageLocks;
+std::mutex dpt::g_pageLockTableMutex;
+
+std::mutex& dpt::getPageLock(uintptr_t pageAddr) {
+    std::lock_guard<std::mutex> lg(g_pageLockTableMutex);
+    auto& slot = g_pageLocks[pageAddr];
+    if (!slot) slot = std::make_unique<std::mutex>();
+    return *slot;
+}
 
 int g_sdkLevel = 0;
 extern ShellConfig g_shell_config;
@@ -135,44 +149,43 @@ const char *GetClassLinkerDefineClassLibPath(){
     return GetArtLibPath();
 }
 
-/**
- * Make the dex mapping writable, once per dex.
- *
- * <p>Restoring instructions means writing plaintext back into the dex that ART
- * mapped read-only. This has to be done explicitly: ART relies on the mapping
- * staying read-only so that a partially-verified dex can never be observed
- * half-patched by another thread.
- *
- * <p>This used to be called from patchMethod on every method (guarded by a
- * dexMemMap memo), and was deleted in 0af9fbf as "dead code" once the v4 rewrite
- * moved the write into patchMethodInsns. That deletion also removed the only
- * thing guaranteeing the pages were writable, leaving patchMethodInsns to depend
- * entirely on hook_mmap having added PROT_WRITE to whatever mmap ART happened to
- * use. That is not guaranteed -- newer ART releases do not always go through the
- * hooked libc mmap -- so on those devices the restore faults writing to a
- * read-only page, inside ClassLinker::DefineClass.
- *
- * <p>Called once per dex: the memo keeps the mprotect off the per-method path,
- * which matters because this runs while ART holds the class-loader lock.
- */
-static void change_dex_protective(uint8_t *begin, uint64_t dexSize,
-                                  int dexIndex __attribute__((unused))) {
-    if (begin == nullptr || dexSize == 0) {
-        DLOGW("skip mprotect dex[%d], begin=%p, dexSize=%llu",
-              dexIndex, begin, (unsigned long long)dexSize);
+// Task 1.5: the method collected during the class_data walk, applied after the
+// RW window is open. Holding these instead of patching inline is what lets the
+// window cover the whole class with a single mprotect pair.
+struct PendingPatch {
+    uint32_t methodIdx;
+    uint32_t codeOff;
+    const uint8_t *enc;
+    uint32_t insnsSize;              // byte count
+};
+
+// Append the pages [insns, insns+insnsSize) to touchedPages. std::set keeps
+// them unique and sorted, which is what both the lock loop and the segment
+// merge below rely on.
+static void collectTouchedPages(std::set<uintptr_t> &touchedPages,
+                                const uint8_t *insns,
+                                uint32_t insnsSize) {
+    if (insns == nullptr || insnsSize == 0) {
         return;
     }
-
-    for (int i = 0; i < 10;) {
-        int ret = dpt_mprotect(begin, begin + dexSize, PROT_READ | PROT_WRITE);
-        if (ret != 0) {
-            ELOG("mprotect fail, dex[%d] address: %p, reason: %d!", dexIndex, begin, ret);
-            i++;
-        } else {
-            DLOGD("mprotect success, dex[%d] address: %p.", dexIndex, begin);
-            break;
-        }
+    const uintptr_t pageSize = (uintptr_t) get_cache_page_size();
+    const uintptr_t first = DPT_PAGE_START((uintptr_t) insns);
+    // Last page is derived from the final byte, not from first+insnsSize, so a
+    // range that ends exactly on a page boundary does not add a trailing page.
+    const uintptr_t last = DPT_PAGE_START((uintptr_t) insns + insnsSize - 1);
+    for (uintptr_t p = first; p <= last; p += pageSize) {
+        touchedPages.insert(p);
     }
+}
+
+// In-memory dexes (Task 1.4) are backed by heap buffers that share their pages
+// with unrelated allocations, and those buffers are writable already. Flipping
+// them back to PROT_READ would take the neighbouring allocations down with them
+// and fault the next writer, so they only get the locks and the i-cache flush.
+// The file-path dex is a private mapping from code_cache/i11111i111.zip, which
+// is where the permission flip belongs.
+static bool is_file_dex_location(const std::string &location) {
+    return location.rfind(DEXES_ZIP_NAME) != std::string::npos;
 }
 
 DPT_ENCRYPT
@@ -254,18 +267,7 @@ static const char* getClassDescriptor(const void* dex_file, const void* dex_clas
 }
 
 /**
- * Decrypt one method's instructions back into the dex.
- */
-DPT_ENCRYPT
-ALWAYS_INLINE
-void patchMethodInsns(uint8_t *begin,
-                      uint32_t methodIdx,
-                      uint32_t codeOff,
-                      const uint8_t *enc,
-                      uint32_t insnsSize);
-
-/**
- * Restore one method of a class from the v4 payload.
+ * Collect one method of a class from the v4 payload.
  *
  * <p>{@code cursor} advances once per method walked in patchClass, i.e. in the
  * same direct-then-virtual order that ClassData.allMethods() used when the
@@ -285,13 +287,20 @@ void patchMethodInsns(uint8_t *begin,
  * later method of this class is off by one too and stays unrestored -- but it does
  * confine the damage to "these methods keep their filler bytes" rather than
  * "this class is silently rewritten with someone else's instructions".
+ *
+ * <p>Task 1.5: nothing is written here. The record is appended to
+ * {@code patches} and its pages to {@code touchedPages}; patchClass opens one
+ * RW window over the whole set and applies them. That is also why the code item
+ * is only read, never dereferenced as writable.
  */
 DPT_ENCRYPT
 ALWAYS_INLINE
-void patchOneClassMethod(uint8_t *begin,
-                         const data::ClassIndexEntry *entry,
-                         uint16_t *cursor,
-                         const dex::ClassDataMethod &method) {
+void collectOneClassMethod(uint8_t *begin,
+                           const data::ClassIndexEntry *entry,
+                           uint16_t *cursor,
+                           const dex::ClassDataMethod &method,
+                           std::vector<PendingPatch> &patches,
+                           std::set<uintptr_t> &touchedPages) {
     if (entry == nullptr || *cursor >= entry->methodCount) {
         return;
     }
@@ -317,9 +326,21 @@ void patchOneClassMethod(uint8_t *begin,
               entry->dexIdx, method.method_idx_delta_, view.methodIdx);
         return;
     }
+    if (view.insnsSize == 0 || method.code_off_ == 0) {
+        // abstract / native: no code item to restore.
+        return;
+    }
 
-    patchMethodInsns(begin, view.methodIdx, method.code_off_,
-                     view.encryptedInsns, view.insnsSize);
+    PendingPatch patch{};
+    patch.methodIdx = view.methodIdx;
+    patch.codeOff = method.code_off_;
+    patch.enc = view.encryptedInsns;
+    patch.insnsSize = view.insnsSize;
+    patches.push_back(patch);
+
+    auto *item = (dex::CodeItem *) (begin + patch.codeOff);
+    collectTouchedPages(touchedPages, (const uint8_t *) item->insns_,
+                        patch.insnsSize);
 }
 
 DPT_ENCRYPT void patchClass(const char* descriptor,
@@ -387,19 +408,14 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                     return;
                 }
 
-                // Restoring instructions writes into the dex mapping, which ART
-                // mapped read-only. Make it writable once per mapping before the
-                // first patch. hook_mmap's PROT_WRITE upgrade is not a substitute:
-                // it only covers dexes mapped through the hooked libc mmap.
-                auto dexMemIt = dexMemMap.find(begin);
-                if(UNLIKELY(dexMemIt == dexMemMap.end())) {
-                    change_dex_protective(begin, dexSize, dexIndex);
-                    dexMemMap.insert(begin);
-                }
-
                 // One binary search per class replaces the old per-method lookup
                 // into a 65536-entry table.
                 uint16_t entryCursor = 0;
+
+                // Task 1.5: collect instead of patching inline, so the whole class
+                // can be restored inside a single page-granular RW window.
+                std::vector<PendingPatch> patches;
+                std::set<uintptr_t> touchedPages;
 
                 size_t read = 0;
                 auto *class_data = (uint8_t *) ((uint8_t *) begin + class_def->class_data_off_);
@@ -431,17 +447,101 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                                                   virtual_methods_size);
 
                 for (uint64_t i = 0; i < direct_methods_size; i++) {
-                    patchOneClassMethod(begin, entry, &entryCursor,
-                                        directMethods[i]);
+                    collectOneClassMethod(begin, entry, &entryCursor,
+                                          directMethods[i], patches,
+                                          touchedPages);
                 }
 
                 for (uint64_t i = 0; i < virtual_methods_size; i++) {
-                    patchOneClassMethod(begin, entry, &entryCursor,
-                                        virtualMethods[i]);
+                    collectOneClassMethod(begin, entry, &entryCursor,
+                                          virtualMethods[i], patches,
+                                          touchedPages);
                 }
 
                 delete[] directMethods;
                 delete[] virtualMethods;
+
+                if (!patches.empty()) {
+                    // Task 1.5: one RW window for the whole class.
+                    //
+                    // Lock first, in page order: two threads restoring different
+                    // classes that share a page must not interleave their
+                    // mprotect/write/restore, and a global lock order is what
+                    // keeps two such threads from deadlocking against each other.
+                    // unique_lock releases in reverse order on scope exit.
+                    std::vector<std::unique_lock<std::mutex>> locks;
+                    locks.reserve(touchedPages.size());
+                    for (uintptr_t page : touchedPages) {
+                        locks.emplace_back(dpt::getPageLock(page));
+                    }
+
+                    const bool restoreRead =
+                            is_file_dex_location(location);
+
+                    // Merge the sorted pages into runs and mprotect each run,
+                    // rather than the first-to-last span: the span would also
+                    // open pages between two unrelated runs, widening the
+                    // writable window for no reason.
+                    std::vector<std::pair<uintptr_t, uintptr_t>> segments;
+                    segments.reserve(touchedPages.size());
+                    const uintptr_t pageSize = (uintptr_t) get_cache_page_size();
+                    bool windowOpen = true;
+                    for (auto it = touchedPages.begin(); it != touchedPages.end();) {
+                        const uintptr_t segStart = *it;
+                        auto next = std::next(it);
+                        while (next != touchedPages.end() &&
+                               *next == *std::prev(next) + pageSize) {
+                            ++next;
+                        }
+                        const uintptr_t segEnd = *std::prev(next) + pageSize;
+
+                        if (restoreRead &&
+                            UNLIKELY(dpt_mprotect((void *) segStart, (void *) segEnd,
+                                                  PROT_READ | PROT_WRITE) != 0)) {
+                            // All or nothing: undo the segments already opened and
+                            // leave every method of this class encrypted, rather
+                            // than restoring only part of it.
+                            ELOG("mprotect RW fail: dex=%d page=" FMT_POINTER,
+                                 dexIndex, segStart);
+                            for (const auto &done : segments) {
+                                dpt_mprotect((void *) done.first, (void *) done.second,
+                                             PROT_READ);
+                            }
+                            windowOpen = false;
+                            break;
+                        }
+                        segments.emplace_back(segStart, segEnd);
+                        it = next;
+                    }
+
+                    if (windowOpen) {
+                        for (const auto &patch : patches) {
+                            patchMethodInsns(begin, patch.methodIdx, patch.codeOff,
+                                             patch.enc, patch.insnsSize);
+                        }
+
+                        // The restored bytes are live instructions. Flush the
+                        // i-cache for each segment before dropping back to
+                        // PROT_READ, or ARM64 keeps executing the ciphertext.
+                        // In-memory dexes need the flush too -- they are just as
+                        // hot -- they only skip the permission flip.
+                        for (const auto &segment : segments) {
+                            __builtin___clear_cache((char *) segment.first,
+                                                    (char *) segment.second);
+                        }
+
+                        if (restoreRead) {
+                            for (const auto &segment : segments) {
+                                if (UNLIKELY(dpt_mprotect((void *) segment.first,
+                                                          (void *) segment.second,
+                                                          PROT_READ) != 0)) {
+                                    ELOG("mprotect READ restore fail: dex=%d page="
+                                         FMT_POINTER, dexIndex, segment.first);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             else {
                 NLOG("class_def->class_data_off_ is zero");
