@@ -2,6 +2,7 @@
 
 本文件是 dpt-shell 项目中 AI 助手的**工作约定**。接手本项目前请先读完本文件，再动手改代码。
 
+改代码前先看流程地图（流程、跨端契约、红线、改哪里）：[docs/项目流程.md](docs/项目流程.md)。
 详细的构建与排障流程见 [docs/build-and-release.md](docs/build-and-release.md)；
 踩坑与故障记录见 [docs/pitfalls.md](docs/pitfalls.md)。
 
@@ -138,6 +139,8 @@ executable/
 - **不要**顺手改无关代码或重新格式化。改动聚焦到当前任务。
 - 改动前先确认工作区干净（`git status`），不要覆盖别人的未提交改动。
 - CI 是唯一的 Native 编译验证手段；**不要**在本地失败后伪造"已验证"的结论。
+- **git 命令执行不了时（环境故障、超时、无输出）直接跳过并记录，不要重试死循环**。
+  把"没跑成 git / 待提交"如实写进交接文档，留给下一任，比反复重试更有用。
 
 ## 8. 两条流水线
 
@@ -156,6 +159,6 @@ executable/
   - nonce = `methodIdx` 的 12 字节 LE 编码（低 4 字节有效）
   - counter 从 0；保留 v2 RC4 分支供调试回退（按 header.version 分发）
   - 载荷版本 `MULTI_DEX_CODE_VERSION` 2 → 3
-- 后续任务与设计见 `docs/phase1-progress.md`（执行进度与交接）
+- 后续任务与设计见 `docs/进度与交接.md`（执行进度与交接，含 Task 1.4 实施记录与性能基准）
   与 `docs/phase1-perf-plan.md`（性能优化方案，唯一执行依据）
 - v1.0.1~1.0.3 启动闪退的根因与修复见 `docs/启动闪退根因分析.md`
