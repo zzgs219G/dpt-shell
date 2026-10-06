@@ -6,6 +6,8 @@
 #include "dpt_crypto.h"
 #include "external/json/json.hpp"
 
+#include <mz_strm.h>
+
 #include <memory>
 #include <mutex>
 
