@@ -512,17 +512,36 @@ static void release_package(void *package_addr, size_t package_size) {
 // extracted zip. The zip is never written to code_cache unless the fallback
 // in combineDexElements triggers.
 
-// [begin, end) of every dex buffer this shell handed to ART. The location gate
-// in dpt_hook.cpp consults it: ART gives every in-memory dex a location
-// starting with "Anonymous-DexFile", including dexes loaded by the app
-// itself, and only buffers registered here may be patched.
+// Every dex buffer this shell handed to ART, with a snapshot of the dex
+// header taken at registration. The location gate in dpt_hook.cpp consults
+// this: ART gives every in-memory dex a location starting with
+// "Anonymous-DexFile", including dexes loaded by the app itself, and only
+// buffers registered here may be patched.
+struct RegisteredInMemDex {
+    const uint8_t *begin;
+    size_t size;
+    uint8_t header[sizeof(dex::Header)];
+};
 static std::mutex g_inmem_dex_mutex;
-static std::vector<std::pair<const uint8_t *, const uint8_t *>> g_inmem_dex_ranges;
+static std::vector<RegisteredInMemDex> g_inmem_dexes;
 
 bool isShellInMemoryDex(const uint8_t *begin) {
     std::lock_guard<std::mutex> lg(g_inmem_dex_mutex);
-    for (const auto &range : g_inmem_dex_ranges) {
-        if (begin >= range.first && begin < range.second) {
+    for (const auto &rec : g_inmem_dexes) {
+        if (begin >= rec.begin && begin < rec.begin + rec.size) {
+            return true;
+        }
+    }
+    // Android 16 (v1.0.5): the in-memory DexFile ART passes to DefineClass
+    // has a begin_ outside the registered buffer range, so the address check
+    // alone rejected every protected class, the random filler was never
+    // replaced, and ART's verifier rejected the Application with VerifyError.
+    // Whatever ART did with the buffer, its dex still starts with the exact
+    // header bytes we registered (dex header carries the file checksum and
+    // SHA-1 signature, so a foreign in-memory dex cannot collide), so fall
+    // back to matching on content.
+    for (const auto &rec : g_inmem_dexes) {
+        if (memcmp(begin, rec.header, sizeof(rec.header)) == 0) {
             return true;
         }
     }
@@ -531,7 +550,13 @@ bool isShellInMemoryDex(const uint8_t *begin) {
 
 static void registerShellInMemoryDex(const uint8_t *begin, size_t size) {
     std::lock_guard<std::mutex> lg(g_inmem_dex_mutex);
-    g_inmem_dex_ranges.emplace_back(begin, begin + size);
+    RegisteredInMemDex rec{};
+    rec.begin = begin;
+    rec.size = size;
+    if (begin != nullptr && size >= sizeof(rec.header)) {
+        memcpy(rec.header, begin, sizeof(rec.header));
+    }
+    g_inmem_dexes.push_back(rec);
 }
 
 // "classes.dex" -> 0, "classesN.dex" -> N-1, anything else -> -1.
@@ -725,9 +750,10 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
         return false;
     }
 
-    // ART's in-memory DexFiles reference our buffers without copying them
-    // (Android 10+ NonOwningMemoryRegion), so both the buffers and the loader
-    // owning the elements must live for the whole process. cbde runs at most
+    // The buffers and the loader owning the elements must live for the whole
+    // process: on some releases ART's in-memory DexFiles reference the buffer
+    // memory directly (Android 10+ NonOwningMemoryRegion), and the spliced
+    // elements keep pointing into the loader either way. cbde runs at most
     // once per process, so this is a single intentional leak; the buffers are
     // released from unique_ptr ownership at the same time.
     static jobject g_mem_loader_global = nullptr;

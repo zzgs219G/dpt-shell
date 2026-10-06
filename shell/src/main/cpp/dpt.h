@@ -63,10 +63,12 @@ struct ShellConfig {
 // instead of being extracted to code_cache. See combineInMemoryDexElements.
 extern bool g_use_in_memory_dex;
 
-// True when `begin` points into a dex buffer this shell handed to ART
-// (registered by combineInMemoryDexElements). Guards the location gate in
-// dpt_hook.cpp against foreign in-memory dexes, whose location shares the
-// "Anonymous-DexFile" prefix.
+// True when `begin` is a dex buffer this shell handed to ART (registered by
+// combineInMemoryDexElements). Guards the location gate in dpt_hook.cpp
+// against foreign in-memory dexes, whose location shares the
+// "Anonymous-DexFile" prefix. Matches the registered address range first,
+// then falls back to the registered dex-header content: on Android 16 the
+// DexFile ART passes to DefineClass does not expose our buffer address.
 bool isShellInMemoryDex(const uint8_t *begin);
 
 void callRealApplicationOnCreate(JNIEnv *env, jclass, jstring realApplicationClassName);

@@ -29,14 +29,25 @@ extern ShellConfig g_shell_config;
 // True for dexes the shell wants patched: either loaded from the extracted
 // zip on disk, or (Task 1.4) an in-memory buffer this shell registered in
 // combineInMemoryDexElements. ART gives ALL in-memory dexes the same
-// "Anonymous-DexFile" location prefix, so the range check keeps a foreign
+// "Anonymous-DexFile" location prefix, so the registry check (address first,
+// dex-header content as fallback; see isShellInMemoryDex) keeps a foreign
 // InMemoryDexClassLoader from being mistaken for shell-protected dexes.
 static bool is_shell_dex_location(const std::string &location, const uint8_t *begin) {
     if (location.rfind(DEXES_ZIP_NAME) != std::string::npos) {
         return true;
     }
-    return location.rfind(ANONYMOUS_DEX_PREFIX) != std::string::npos
-            && isShellInMemoryDex(begin);
+    if (location.rfind(ANONYMOUS_DEX_PREFIX) == std::string::npos) {
+        return false;
+    }
+    if (!isShellInMemoryDex(begin)) {
+        // A silent reject here means the protected classes keep their random
+        // filler and surface later as a VerifyError with nothing pointing
+        // back to this gate (release builds compile this log out).
+        DLOGE("anonymous dex not registered as shell dex: begin=%p, loc=%s",
+              (const void *) begin, location.c_str());
+        return false;
+    }
+    return true;
 }
 
 const char *GetArtLibPath();
