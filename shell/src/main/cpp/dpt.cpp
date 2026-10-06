@@ -7,10 +7,18 @@
 #include "external/json/json.hpp"
 
 #include <memory>
+#include <mutex>
 
 using namespace dpt;
 
 static pthread_mutex_t g_write_dexes_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Defined further down with the Task 1.8 package cache and the Task 1.4
+// in-memory path; declared here because combineDexElements sits above their
+// definitions.
+static void ensure_package_loaded(JNIEnv *env, void **package_addr, size_t *package_size);
+static void release_package(void *package_addr, size_t package_size);
+DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetClassLoader);
 
 static jobject g_realApplicationInstance = nullptr;
 static jclass g_realApplicationClass = nullptr;
@@ -22,6 +30,13 @@ DPT_DATA_SECTION uint8_t DATA_SECTION_RO_DATA[] = ".rodata";
 KEEP_SYMBOL DPT_DATA_SECTION uint8_t DPT_UNKNOWN_DATA[] = "1234567890abcdef";
 
 ShellConfig g_shell_config;
+
+// Task 1.4: when true, the protected dexes are loaded from the zip embedded
+// in classes.dex through InMemoryDexClassLoader elements instead of being
+// written to code_cache. Decided once in read_shell_config (API >= 29 and not
+// disabled by --disable-inmemory-dex); combineDexElements may only turn it
+// off, when it falls back to the on-disk path.
+bool g_use_in_memory_dex = false;
 
 static JNINativeMethod gMethods[] = {
         {"craoc", "(Ljava/lang/String;)V",                               (void *) callRealApplicationOnCreate},
@@ -96,10 +111,26 @@ DPT_ENCRYPT void combineDexElement(JNIEnv* env, jclass __unused, jobject targetC
 }
 
 DPT_ENCRYPT void combineDexElements(JNIEnv* env, jclass klass, jobject targetClassLoader) {
-    char compressedDexesPathChs[256] = {0};
-    getCompressedDexesPath(env,compressedDexesPathChs, ARRAY_LENGTH(compressedDexesPathChs));
+    if(g_use_in_memory_dex && !combineInMemoryDexElements(env, targetClassLoader)) {
+        // Task 1.4 fallback: in-memory loading failed, so the zip was never
+        // (or could not be) prepared. Write it now, then take the regular
+        // on-disk path below.
+        DLOGW("in-memory dex combine failed, falling back to %s", DEXES_ZIP_NAME);
+        g_use_in_memory_dex = false;
+        pthread_mutex_lock(&g_write_dexes_mutex);
+        void *package_addr = nullptr;
+        size_t package_size = 0;
+        ensure_package_loaded(env, &package_addr, &package_size);
+        extractDexesInNeeded(env, package_addr, package_size);
+        release_package(package_addr, package_size);
+        pthread_mutex_unlock(&g_write_dexes_mutex);
+    }
 
-    combineDexElement(env, klass, targetClassLoader, compressedDexesPathChs);
+    if(!g_use_in_memory_dex) {
+        char compressedDexesPathChs[256] = {0};
+        getCompressedDexesPath(env,compressedDexesPathChs, ARRAY_LENGTH(compressedDexesPathChs));
+        combineDexElement(env, klass, targetClassLoader, compressedDexesPathChs);
+    }
 
 #ifndef DEBUG
     junkCodeDexProtect(env);
@@ -409,13 +440,390 @@ DPT_ENCRYPT static bool registerNativeMethods(JNIEnv *env) {
 }
 
 
+// Map the APK once per process instead of once per caller (Task 1.8).
+//
+// read_shell_config (JNI_OnLoad) and init_app (JniBridge.ia) used to each do
+// load_package + unload_package, mmap'ing the whole APK twice per startup.
+// Everything either of them keeps is copied out of the mapping first, so
+// holding the mapping alive is safe:
+//   - g_codeItemFileData / writeDexAchieve get heap copies from
+//     read_zip_file_entry (new uint8_t[])
+//   - g_shell_config stores std::string copies of the decrypted JSON
+//
+// The mutex is heap-allocated so it outlives cleanup_package at process exit;
+// the risk-detection thread may still be alive then.
+#ifndef DPT_DISABLE_MMAP_CACHE
+static std::mutex *g_package_mutex = new std::mutex();
+static void *g_cached_package_addr = nullptr;
+static size_t g_cached_package_size = 0;
+
+static void ensure_package_loaded(JNIEnv *env, void **package_addr, size_t *package_size) {
+    std::lock_guard<std::mutex> lg(*g_package_mutex);
+    if (g_cached_package_addr != nullptr) {
+        *package_addr = g_cached_package_addr;
+        *package_size = g_cached_package_size;
+        return;
+    }
+    // Loading inside the lock keeps two concurrent callers from mmap'ing twice
+    // and one of the mappings leaking. A failed load is not cached, so the next
+    // caller retries instead of getting a null mapping forever.
+    load_package(env, package_addr, package_size);
+    if (*package_addr != nullptr && *package_size > 0) {
+        g_cached_package_addr = *package_addr;
+        g_cached_package_size = *package_size;
+    }
+}
+
+static void release_package(void *package_addr, size_t package_size) {
+    // Intentionally does not unmap: the mapping is shared with the other
+    // caller and stays valid until process exit (cleanup_package below).
+    (void) package_addr;
+    (void) package_size;
+}
+
+__attribute__((destructor)) static void cleanup_package() {
+    std::lock_guard<std::mutex> lg(*g_package_mutex);
+    if (g_cached_package_addr != nullptr) {
+        unload_package(g_cached_package_addr, g_cached_package_size);
+        g_cached_package_addr = nullptr;
+        g_cached_package_size = 0;
+    }
+}
+#else
+// -DDPT_DISABLE_MMAP_CACHE restores the pre-Task-1.8 behaviour: map on every
+// use, unmap immediately after.
+static void ensure_package_loaded(JNIEnv *env, void **package_addr, size_t *package_size) {
+    load_package(env, package_addr, package_size);
+}
+
+static void release_package(void *package_addr, size_t package_size) {
+    unload_package(package_addr, package_size);
+}
+#endif
+
+// ---- Task 1.4: InMemoryDexClassLoader ---------------------------------
+//
+// Instead of writing the zip out of classes.dex and combining the file, the
+// protected dexes are handed to ART as direct ByteBuffers wrapped in a
+// temporary InMemoryDexClassLoader; its dex elements are then appended to the
+// app's DexPathList (a splice), exactly the way combineDexElement appends the
+// extracted zip. The zip is never written to code_cache unless the fallback
+// in combineDexElements triggers.
+
+// [begin, end) of every dex buffer this shell handed to ART. The location gate
+// in dpt_hook.cpp consults it: ART gives every in-memory dex a location
+// starting with "Anonymous-DexFile", including dexes loaded by the app
+// itself, and only buffers registered here may be patched.
+static std::mutex g_inmem_dex_mutex;
+static std::vector<std::pair<const uint8_t *, const uint8_t *>> g_inmem_dex_ranges;
+
+bool isShellInMemoryDex(const uint8_t *begin) {
+    std::lock_guard<std::mutex> lg(g_inmem_dex_mutex);
+    for (const auto &range : g_inmem_dex_ranges) {
+        if (begin >= range.first && begin < range.second) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void registerShellInMemoryDex(const uint8_t *begin, size_t size) {
+    std::lock_guard<std::mutex> lg(g_inmem_dex_mutex);
+    g_inmem_dex_ranges.emplace_back(begin, begin + size);
+}
+
+// "classes.dex" -> 0, "classesN.dex" -> N-1, anything else -> -1.
+// Mirrors DexUtils.getDexNumber on the packing side: the payload indexes each
+// dex with exactly this number, and ART derives the runtime multidex suffix
+// from the buffer's position inside the ByteBuffer[], so buffer position must
+// equal payload dex index.
+static int in_memory_dex_number(const char *name) {
+    if (name == nullptr) {
+        return -1;
+    }
+    static const std::string prefix = "classes";
+    static const std::string suffix = ".dex";
+    std::string s(name);
+    if (s.size() < prefix.size() + suffix.size()
+            || s.compare(0, prefix.size(), prefix) != 0
+            || s.compare(s.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return -1;
+    }
+    std::string digits = s.substr(prefix.size(), s.size() - prefix.size() - suffix.size());
+    for (char c : digits) {
+        if (c < '0' || c > '9') {
+            return -1;
+        }
+    }
+    if (digits.empty()) {
+        return 0;
+    }
+    if (digits.size() > 4) {
+        return -1;
+    }
+    return atoi(digits.c_str()) - 1;
+}
+
+// Read the embedded zip out of classes.dex, turn each classesN.dex entry into
+// a direct ByteBuffer, and splice the resulting elements into
+// targetClassLoader. Returns false on any problem; the caller then falls back
+// to writing the zip and combining it the old way.
+DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetClassLoader) {
+    void *package_addr = nullptr;
+    size_t package_size = 0;
+    ensure_package_loaded(env, &package_addr, &package_size);
+    if (package_addr == nullptr || package_size == 0) {
+        DLOGE("in-memory dex: apk mapping unavailable");
+        release_package(package_addr, package_size);
+        return false;
+    }
+
+    auto entry = read_zip_file_entry(package_addr, package_size,
+                                     AY_OBFUSCATE(COMBINE_DEX_FILES_NAME_IN_ZIP));
+    release_package(package_addr, package_size);
+    if (!entry.has_value()) {
+        DLOGE("in-memory dex: no %s in apk", COMBINE_DEX_FILES_NAME_IN_ZIP);
+        return false;
+    }
+
+    auto [entry_data, entry_size] = entry.value();
+    // Owns the classes.dex bytes for the whole call; every buffer below is a
+    // copy out of it, so nothing points into this memory once we return.
+    std::unique_ptr<uint8_t[]> entry_guard(entry_data);
+
+    uint32_t zip_len = readZipLength(entry_data, entry_size);
+    if (zip_len == 0 || entry_size <= (size_t) zip_len + 4) {
+        DLOGE("in-memory dex: bad embedded zip length %u (entry size %zu)",
+              zip_len, entry_size);
+        return false;
+    }
+    const uint8_t *zip_start = entry_data + (entry_size - zip_len - 4);
+
+    // dex number -> (buffer, size). std::map iterates in index order, which
+    // is the order the buffers must be handed to ART.
+    std::map<int, std::pair<std::unique_ptr<uint8_t[]>, size_t>> dexes;
+
+    void *mem_stream = mz_stream_mem_create();
+    void *zip_handle = mem_stream != nullptr ? mz_zip_create() : nullptr;
+    if (mem_stream == nullptr || zip_handle == nullptr) {
+        DLOGE("in-memory dex: minizip alloc failed");
+        mz_zip_delete(&zip_handle);
+        mz_stream_mem_delete(&mem_stream);
+        return false;
+    }
+    mz_stream_mem_set_buffer(mem_stream, (void *) zip_start, zip_len);
+    mz_stream_open(mem_stream, nullptr, MZ_OPEN_MODE_READ);
+
+    bool entry_names_ok = true;
+    int32_t err = mz_zip_open(zip_handle, mem_stream, MZ_OPEN_MODE_READ);
+    if (err == MZ_OK) {
+        err = mz_zip_goto_first_entry(zip_handle);
+        while (err == MZ_OK) {
+            mz_zip_file *file_info = nullptr;
+            err = mz_zip_entry_get_info(zip_handle, &file_info);
+            if (err != MZ_OK || file_info == nullptr) {
+                break;
+            }
+
+            int dex_number = in_memory_dex_number(file_info->filename);
+            if (dex_number < 0 || dex_number > 255) {
+                // e.g. a stray junkcode.dex; the on-disk path handles those.
+                DLOGE("in-memory dex: unexpected entry name '%s'", file_info->filename);
+                entry_names_ok = false;
+                break;
+            }
+
+            if (file_info->uncompressed_size > 0) {
+                err = mz_zip_entry_read_open(zip_handle, 0, nullptr);
+                if (err != MZ_OK) {
+                    DLOGE("in-memory dex: open '%s' failed: %d", file_info->filename, err);
+                    break;
+                }
+                auto buffer = std::make_unique<uint8_t[]>(file_info->uncompressed_size);
+                int32_t nread = mz_zip_entry_read(zip_handle, buffer.get(),
+                                                  (int32_t) file_info->uncompressed_size);
+                mz_zip_entry_close(zip_handle);
+                if (nread != (int32_t) file_info->uncompressed_size) {
+                    DLOGE("in-memory dex: short read of '%s' (%d/" FMT_INT64_T ")",
+                          file_info->filename, nread, file_info->uncompressed_size);
+                    break;
+                }
+                dexes[dex_number] = {std::move(buffer), (size_t) file_info->uncompressed_size};
+            }
+            err = mz_zip_goto_next_entry(zip_handle);
+        }
+    } else {
+        DLOGE("in-memory dex: embedded zip open failed: %d", err);
+    }
+
+    bool iterate_ok = (err == MZ_END_OF_LIST);
+    mz_zip_close(zip_handle);
+    mz_zip_delete(&zip_handle);
+    mz_stream_mem_delete(&mem_stream);
+
+    if (!entry_names_ok || !iterate_ok || dexes.empty()) {
+        DLOGE("in-memory dex: zip read failed (names=%d, done=%d, count=%zu)",
+              entry_names_ok, iterate_ok, dexes.size());
+        return false;
+    }
+
+    // Buffer positions drive the runtime's multidex suffix, and the payload
+    // was built with dexIndex == DexUtils.getDexNumber(entry name); a hole
+    // would silently shift every later dex's index.
+    int expect = 0;
+    for (auto &kv : dexes) {
+        if (kv.first != expect) {
+            DLOGE("in-memory dex: dex indices not contiguous (%d != %d)", kv.first, expect);
+            return false;
+        }
+        expect++;
+    }
+
+    // ByteBuffer[] in dex-number order. ART gives the i-th buffer the runtime
+    // multidex suffix that parse_dex_number turns back into i -- buffer
+    // position IS the payload's dex index.
+    jclass byteBufferCls = jni::FindClass(env, "java/nio/ByteBuffer");
+    if (byteBufferCls == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: java/nio/ByteBuffer not found");
+        return false;
+    }
+    jobjectArray buffers = env->NewObjectArray((jsize) dexes.size(), byteBufferCls, nullptr);
+    if (buffers == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: NewObjectArray failed");
+        return false;
+    }
+
+    jsize buffer_index = 0;
+    for (auto &kv : dexes) {
+        jobject direct_buffer = env->NewDirectByteBuffer(kv.second.first.get(),
+                                                          (jlong) kv.second.second);
+        if (direct_buffer == nullptr) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            DLOGE("in-memory dex: NewDirectByteBuffer failed for dex %d", kv.first);
+            return false;
+        }
+        env->SetObjectArrayElement(buffers, buffer_index++, direct_buffer);
+        env->DeleteLocalRef(direct_buffer);
+    }
+
+    jclass loaderCls = jni::FindClass(env, "dalvik/system/InMemoryDexClassLoader");
+    if (loaderCls == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: InMemoryDexClassLoader not found");
+        return false;
+    }
+    jobject memLoader = jni::NewObject(env, loaderCls,
+                                       "([Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V",
+                                       buffers, targetClassLoader);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (memLoader == nullptr) {
+        DLOGE("in-memory dex: InMemoryDexClassLoader construction failed");
+        return false;
+    }
+
+    // ART's in-memory DexFiles reference our buffers without copying them
+    // (Android 10+ NonOwningMemoryRegion), so both the buffers and the loader
+    // owning the elements must live for the whole process. cbde runs at most
+    // once per process, so this is a single intentional leak; the buffers are
+    // released from unique_ptr ownership at the same time.
+    static jobject g_mem_loader_global = nullptr;
+    if (g_mem_loader_global == nullptr) {
+        g_mem_loader_global = env->NewGlobalRef(memLoader);
+    }
+    if (g_mem_loader_global == nullptr) {
+        // OOM: the loader could be collected while the spliced elements still
+        // point into it. Bail out before the buffers leave unique_ptr
+        // ownership, so the fallback path frees them normally.
+        DLOGE("in-memory dex: NewGlobalRef failed");
+        return false;
+    }
+    for (auto &kv : dexes) {
+        registerShellInMemoryDex(kv.second.first.get(), kv.second.second);
+        kv.second.first.release();
+    }
+
+    // Splice: append the temporary loader's elements to the target's
+    // DexPathList, the same construction combineDexElement uses.
+    reflect::dalvik_system_BaseDexClassLoader memBase(env, memLoader);
+    jobject memPathListObj = memBase.getPathList();
+    if (memPathListObj == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: temporary loader has no pathList");
+        return false;
+    }
+    reflect::dalvik_system_DexPathList memPathList(env, memPathListObj);
+    jobjectArray memElements = memPathList.getDexElements();
+    if (memElements == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: temporary loader has no elements");
+        return false;
+    }
+    jsize memSize = env->GetArrayLength(memElements);
+    if (memSize <= 0) {
+        DLOGE("in-memory dex: no elements produced");
+        return false;
+    }
+
+    reflect::dalvik_system_BaseDexClassLoader targetBase(env, targetClassLoader);
+    jobject targetPathListObj = targetBase.getPathList();
+    if (targetPathListObj == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: target pathList missing");
+        return false;
+    }
+    reflect::dalvik_system_DexPathList targetPathList(env, targetPathListObj);
+    jobjectArray originElements = targetPathList.getDexElements();
+    if (originElements == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: target dexElements missing");
+        return false;
+    }
+    jsize originSize = env->GetArrayLength(originElements);
+
+    reflect::dalvik_system_DexPathList::Element element(env, nullptr);
+    jclass elementClass = element.getClass();
+    if (elementClass == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: DexPathList$Element not found");
+        return false;
+    }
+    jobjectArray newElements = env->NewObjectArray(originSize + memSize, elementClass, nullptr);
+    if (newElements == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        DLOGE("in-memory dex: NewObjectArray failed");
+        return false;
+    }
+
+    for (jsize i = 0; i < originSize; i++) {
+        jobject elementObj = env->GetObjectArrayElement(originElements, i);
+        env->SetObjectArrayElement(newElements, i, elementObj);
+        if (elementObj != nullptr) {
+            env->DeleteLocalRef(elementObj);
+        }
+    }
+    for (jsize i = 0; i < memSize; i++) {
+        jobject elementObj = env->GetObjectArrayElement(memElements, i);
+        env->SetObjectArrayElement(newElements, originSize + i, elementObj);
+        if (elementObj != nullptr) {
+            env->DeleteLocalRef(elementObj);
+        }
+    }
+
+    targetPathList.setDexElements(newElements);
+    DLOGI("in-memory dex elements combined: origin=%d, in-memory=%d",
+          originSize, memSize);
+    return true;
+}
+
 DPT_ENCRYPT void init_app(JNIEnv *env, jclass __unused) {
     DLOGD("called!");
     clock_t start = clock();
 
     void *package_addr = nullptr;
     size_t package_size = 0;
-    load_package(env, &package_addr, &package_size);
+    ensure_package_loaded(env, &package_addr, &package_size);
 
     if(!g_codeItemFileData.has_value()) {
         auto entry_data = read_zip_file_entry(package_addr, package_size, AY_OBFUSCATE(CODE_ITEM_NAME_IN_ZIP));
@@ -431,11 +839,18 @@ DPT_ENCRYPT void init_app(JNIEnv *env, jclass __unused) {
     auto [entry_data, entry_size] = g_codeItemFileData.value();
     readCodeItem((uint8_t *)entry_data, entry_size);
 
-    pthread_mutex_lock(&g_write_dexes_mutex);
-    extractDexesInNeeded(env, package_addr, package_size);
-    pthread_mutex_unlock(&g_write_dexes_mutex);
+    if (g_use_in_memory_dex) {
+        // Task 1.4: in-memory mode never writes code_cache. If the in-memory
+        // combine later fails, combineDexElements writes the zip itself as
+        // part of its fallback.
+        DLOGI("in-memory dex mode, skip extracting %s", DEXES_ZIP_NAME);
+    } else {
+        pthread_mutex_lock(&g_write_dexes_mutex);
+        extractDexesInNeeded(env, package_addr, package_size);
+        pthread_mutex_unlock(&g_write_dexes_mutex);
+    }
 
-    unload_package(package_addr, package_size);
+    release_package(package_addr, package_size);
     printTime("read package data took =" , start);
 }
 
@@ -463,7 +878,7 @@ DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
 DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
     void *package_addr = nullptr;
     size_t package_size = 0;
-    load_package(env, &package_addr, &package_size);
+    ensure_package_loaded(env, &package_addr, &package_size);
 
     auto entry = read_zip_file_entry(package_addr, package_size , AY_OBFUSCATE(SHELL_CONFIG_IN_ZIP));
     if(entry.has_value()) {
@@ -474,7 +889,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             jobject mBoundApplicationObj = activityThread.getBoundApplication();
             if (mBoundApplicationObj == nullptr) {
                 DLOGE("bound application is null");
-                unload_package(package_addr, package_size);
+                release_package(package_addr, package_size);
                 return;
             }
 
@@ -482,7 +897,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             jobject appInfoObj = appBindData.getAppInfo();
             if (appInfoObj == nullptr) {
                 DLOGE("app info is null");
-                unload_package(package_addr, package_size);
+                release_package(package_addr, package_size);
                 return;
             }
 
@@ -490,7 +905,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             jstring packageNameJstr = applicationInfo.getPackageName();
             if (packageNameJstr == nullptr) {
                 DLOGE("package name is null");
-                unload_package(package_addr, package_size);
+                release_package(package_addr, package_size);
                 return;
             }
 
@@ -500,7 +915,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 if (packageNameChs != nullptr) {
                     env->ReleaseStringUTFChars(packageNameJstr, packageNameChs);
                 }
-                unload_package(package_addr, package_size);
+                release_package(package_addr, package_size);
                 return;
             }
 
@@ -517,7 +932,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                                        key_material.size());
             if (aes_key.size() != 32) {
                 DLOGE("derive config aes key failed");
-                unload_package(package_addr, package_size);
+                release_package(package_addr, package_size);
                 return;
             }
             memcpy(g_shell_config.aes_key, aes_key.data(), sizeof(g_shell_config.aes_key));
@@ -531,7 +946,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             auto decrypted_data = aes_cbc_decrypt(aes_key.data(), 256, iv, indata.data(), entry_size);
             if (decrypted_data.empty()) {
                 DLOGE("decrypt shell config failed");
-                unload_package(package_addr, package_size);
+                release_package(package_addr, package_size);
                 return;
             }
 
@@ -547,6 +962,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 const char *keyDexSign = AY_OBFUSCATE("dex_sign");
                 const char *keyJunkClsName = AY_OBFUSCATE("junk_cls_name");
                 const char *keyRiskCheckFlags = AY_OBFUSCATE("risk_check_flags");
+                const char *keyDisableInMemoryDex = AY_OBFUSCATE("disable_inmemory_dex");
                 g_shell_config.application_name = shell_config.value(keyAppName, "");
                 g_shell_config.application_component_factory = shell_config.value(keyAcfName, "");
                 g_shell_config.jni_class_name = shell_config.value(keyJniClsName, "");
@@ -554,6 +970,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 g_shell_config.dex_sign = shell_config.value(keyDexSign, "");
                 g_shell_config.junk_class_name = shell_config.value(keyJunkClsName, "");
                 g_shell_config.risk_check_flags = shell_config.value(keyRiskCheckFlags, 0);
+                g_shell_config.disable_inmemory_dex = shell_config.value(keyDisableInMemoryDex, false);
 
                 DLOGD("application_name = %s", g_shell_config.application_name.c_str());
                 DLOGD("application_component_factory = %s", g_shell_config.application_component_factory.c_str());
@@ -562,13 +979,26 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 DLOGD("dex_sign = %s", g_shell_config.dex_sign.c_str());
                 DLOGD("junk_class_name = %s", g_shell_config.junk_class_name.c_str());
                 DLOGD("risk_check_flags = 0x%x", g_shell_config.risk_check_flags);
+                DLOGD("disable_inmemory_dex = %d", g_shell_config.disable_inmemory_dex ? 1 : 0);
             } catch (const std::exception &e) {
                 DLOGE("parse shell config failed: %s", e.what());
             }
         }
     }
 
-    unload_package(package_addr, package_size);
+    release_package(package_addr, package_size);
+
+    // Task 1.4: decide the dex loading mode once, before anything can call
+    // cbde/ia. In-memory needs the multidex location suffix that ART only
+    // gives buffer-array loaders from Android 10 on; on older releases every
+    // buffer would parse as dex 0 and the wrong payload would be restored.
+    // A parse failure above leaves the flag false, i.e. the safe on-disk path.
+    g_use_in_memory_dex = !g_shell_config.disable_inmemory_dex
+            && android_get_device_api_level() >= __ANDROID_API_Q__;
+    DLOGI("in-memory dex mode: %s (api=%d, disabled=%d)",
+          g_use_in_memory_dex ? "on" : "off",
+          android_get_device_api_level(),
+          g_shell_config.disable_inmemory_dex ? 1 : 0);
 }
 
 

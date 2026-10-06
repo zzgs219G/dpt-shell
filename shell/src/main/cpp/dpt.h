@@ -53,7 +53,21 @@ struct ShellConfig {
     std::string junk_class_name;
     uint8_t aes_key[32] = {};
     uint32_t risk_check_flags = 0;
+    // CLI/config switch: never load the protected dex through
+    // InMemoryDexClassLoader, always write the zip to code_cache.
+    bool disable_inmemory_dex = false;
 };
+
+// Decided once in read_shell_config: true when the protected dexes are loaded
+// from the zip embedded in classes.dex through InMemoryDexClassLoader elements
+// instead of being extracted to code_cache. See combineInMemoryDexElements.
+extern bool g_use_in_memory_dex;
+
+// True when `begin` points into a dex buffer this shell handed to ART
+// (registered by combineInMemoryDexElements). Guards the location gate in
+// dpt_hook.cpp against foreign in-memory dexes, whose location shares the
+// "Anonymous-DexFile" prefix.
+bool isShellInMemoryDex(const uint8_t *begin);
 
 void callRealApplicationOnCreate(JNIEnv *env, jclass, jstring realApplicationClassName);
 

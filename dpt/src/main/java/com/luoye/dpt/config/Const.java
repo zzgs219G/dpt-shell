@@ -48,6 +48,7 @@ public class Const {
     public static final String OPTION_DISABLE_FRIDA_DETECT_LONG = "disable-frida-detect";
     public static final String OPTION_DISABLE_CRC_DETECT_LONG = "disable-crc-detect";
     public static final String OPTION_DISABLE_ANTI_DEBUG_LONG = "disable-anti-debug";
+    public static final String OPTION_DISABLE_INMEMORY_DEX_LONG = "disable-inmemory-dex";
 
     // Risk check flags: one int, each bit is a switch (1 = disable)
     public static final int FLAG_DISABLE_FRIDA_DETECT = 1;

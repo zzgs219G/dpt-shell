@@ -163,7 +163,7 @@ static int separate_dex_number(std::string &str) {
  * 从 dex location 解析出 multidex 下标(与 v4 索引的 dexIdx 对齐)。
  * 兼容两种格式:
  *   旧格式: base.apk!classes2.dex  → 1   (classes.dex 主 dex → 0)
- *   新格式(Android 16/17): base.zip!4 → 4 (主 dex 无后缀 → 0)
+ *   新格式(Android 17 起): base.zip!4 → 4 (主 dex 无后缀 → 0)
  * Android 17 起,multidex 后缀从 "!classesN.dex" 变成了纯数字 "!N",N 即 0-based 下标,
  * 旧逻辑因为只在出现 ".dex" 时才解析,会把所有 dex 都算成 0,导致只有 dex0 被正确还原。
  */
@@ -304,7 +304,7 @@ jstring getCompressedDexesPathExport(JNIEnv *env, jclass __unused) {
     return env->NewStringUTF(dexesPath);
 }
 
-static uint32_t readZipLength(const uint8_t *data, size_t size) {
+uint32_t readZipLength(const uint8_t *data, size_t size) {
     if (size < 4) return 0;
 
     uint32_t length = 0;

@@ -25,6 +25,9 @@ inline int get_cache_page_size() {
 #define DPT_DATA_SECTION SECTION(SECTION_NAME_DATA)
 
 #define DEXES_ZIP_NAME "i11111i111.zip"
+// ART's location prefix for dex loaded through InMemoryDexClassLoader
+// (Task 1.4). See is_shell_dex_location in dpt_hook.cpp.
+#define ANONYMOUS_DEX_PREFIX "Anonymous-DexFile"
 #define CACHE_DIR "code_cache"
 
 #define SHELL_CONFIG_IN_ZIP "assets/d_shell_data_001"

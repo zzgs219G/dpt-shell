@@ -2,7 +2,7 @@
 // Created by luoyesiqiu
 //
 
-#include <map>
+#include <set>
 #include <string>
 #include <cstring>
 #include <sys/system_properties.h>
@@ -15,13 +15,29 @@
 
 using namespace dpt;
 
-// Dex indices whose mapping has already been made writable by
-// change_dex_protective. Kept as a memo so the mprotect happens once per dex
-// rather than once per method -- patchClass runs under the class-loader lock.
-static std::map<int, uint8_t *> dexMemMap;
+// Dex mappings already made writable by change_dex_protective, keyed by the
+// mapping address. Kept as a memo so the mprotect happens once per dex rather
+// than once per method -- patchClass runs under the class-loader lock. Keyed
+// by address (not dex index) because the location gate below admits two
+// different dexes that both parse to index 0 (e.g. a file dex and an
+// in-memory dex), and a shared key would leave one of them read-only.
+static std::set<uint8_t *> dexMemMap;
 
 int g_sdkLevel = 0;
 extern ShellConfig g_shell_config;
+
+// True for dexes the shell wants patched: either loaded from the extracted
+// zip on disk, or (Task 1.4) an in-memory buffer this shell registered in
+// combineInMemoryDexElements. ART gives ALL in-memory dexes the same
+// "Anonymous-DexFile" location prefix, so the range check keeps a foreign
+// InMemoryDexClassLoader from being mistaken for shell-protected dexes.
+static bool is_shell_dex_location(const std::string &location, const uint8_t *begin) {
+    if (location.rfind(DEXES_ZIP_NAME) != std::string::npos) {
+        return true;
+    }
+    return location.rfind(ANONYMOUS_DEX_PREFIX) != std::string::npos
+            && isShellInMemoryDex(begin);
+}
 
 const char *GetArtLibPath();
 const char *GetClassLinkerDefineClassLibPath();
@@ -342,29 +358,32 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
             return;
         }
 
-        if(location.rfind(DEXES_ZIP_NAME) != std::string::npos && dex_class_def){
+        if(is_shell_dex_location(location, begin) && dex_class_def){
             int dexIndex = parse_dex_number(location);
 
             auto* class_def = (dex::ClassDef *)dex_class_def;
             NLOG("class_desc = '%s', class_idx_ = 0x%x, class data off = 0x%x",descriptor,class_def->class_idx_,class_def->class_data_off_);
 
             if(LIKELY(class_def->class_data_off_ != 0)) {
-                // Restoring instructions writes into the dex mapping, which ART
-                // mapped read-only. Make it writable once per dex before the
-                // first patch. hook_mmap's PROT_WRITE upgrade is not a substitute:
-                // it only covers dexes mapped through the hooked libc mmap.
-                auto dexMemIt = dexMemMap.find(dexIndex);
-                if(UNLIKELY(dexMemIt == dexMemMap.end())) {
-                    change_dex_protective(begin, dexSize, dexIndex);
-                    dexMemMap.insert(std::pair<int,uint8_t *>(dexIndex, begin));
-                }
-
+                // Look the class up before touching page permissions: a dex
+                // outside the payload (e.g. a keep dex living beside the
+                // shell dex) must not be mprotect'ed or written at all.
                 auto *dexCode = data::MultiDexCode::getInst();
                 const auto *entry = dexCode->findClassIndex(
                         (uint8_t) dexIndex, class_def->class_data_off_);
                 if (UNLIKELY(entry == nullptr)) {
                     // Class was not protected (excluded by rules, or a new class).
                     return;
+                }
+
+                // Restoring instructions writes into the dex mapping, which ART
+                // mapped read-only. Make it writable once per mapping before the
+                // first patch. hook_mmap's PROT_WRITE upgrade is not a substitute:
+                // it only covers dexes mapped through the hooked libc mmap.
+                auto dexMemIt = dexMemMap.find(begin);
+                if(UNLIKELY(dexMemIt == dexMemMap.end())) {
+                    change_dex_protective(begin, dexSize, dexIndex);
+                    dexMemMap.insert(begin);
                 }
 
                 // One binary search per class replaces the old per-method lookup

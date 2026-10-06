@@ -59,6 +59,7 @@ void appendLog(const char* log);
 void load_package(JNIEnv *env,void **package_addr,size_t *package_size);
 void unload_package(void *apk_addr,size_t package_size);
 void extractDexesInNeeded(JNIEnv *env,void *package_addr,size_t package_size);
+uint32_t readZipLength(const uint8_t *data, size_t size);
 
 std::optional<std::tuple<uint8_t*, size_t>> read_zip_file_entry(void* zip_addr, off_t zip_size, const char* entry_name);
 

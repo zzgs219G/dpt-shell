@@ -69,6 +69,7 @@ public abstract class AndroidPackage {
         public String protectConfigFile = null;
         public boolean verifySign = false;
         public int riskCheckFlags = 0;
+        public boolean disableInmemoryDex = false;
 
         public Builder filePath(String path) {
             this.filePath = path;
@@ -107,6 +108,11 @@ public abstract class AndroidPackage {
 
         public Builder riskCheckFlags(int riskCheckFlags) {
             this.riskCheckFlags = riskCheckFlags;
+            return this;
+        }
+
+        public Builder disableInmemoryDex(boolean disableInmemoryDex) {
+            this.disableInmemoryDex = disableInmemoryDex;
             return this;
         }
 
@@ -157,6 +163,7 @@ public abstract class AndroidPackage {
     private String protectConfigFile;
     private boolean verifySign = false;
     private int riskCheckFlags = 0;
+    private boolean disableInmemoryDex = false;
 
     public AndroidPackage(Builder builder) {
         setFilePath(builder.filePath);
@@ -173,6 +180,7 @@ public abstract class AndroidPackage {
         setProtectConfigFile(builder.protectConfigFile);
         setVerifySign(builder.verifySign);
         setRiskCheckFlags(builder.riskCheckFlags);
+        setDisableInmemoryDex(builder.disableInmemoryDex);
     }
 
     public void setProtectConfigFile(String protectConfigFile) {
@@ -197,6 +205,14 @@ public abstract class AndroidPackage {
 
     public void setRiskCheckFlags(int riskCheckFlags) {
         this.riskCheckFlags = riskCheckFlags;
+    }
+
+    public boolean isDisableInmemoryDex() {
+        return disableInmemoryDex;
+    }
+
+    public void setDisableInmemoryDex(boolean disableInmemoryDex) {
+        this.disableInmemoryDex = disableInmemoryDex;
     }
 
     public boolean isSmaller() {
@@ -1122,6 +1138,11 @@ public abstract class AndroidPackage {
         ShellConfig shellConfig = ShellConfig.getInstance();
         // Merge CLI flags into config-file flags (each bit = one switch)
         shellConfig.setRiskCheckFlags(shellConfig.getRiskCheckFlags() | getRiskCheckFlags());
+        // The CLI can only force in-memory dex off, never on; the config file
+        // may already have disabled it.
+        if (isDisableInmemoryDex()) {
+            shellConfig.setDisableInmemoryDex(true);
+        }
 
         if (isVerifySign()) {
             String sha256 = computeSignatureSha256();

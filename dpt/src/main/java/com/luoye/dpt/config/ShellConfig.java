@@ -35,6 +35,12 @@ public class ShellConfig {
     @JSONField(name = "risk_check_flags")
     private int riskCheckFlags;
 
+    // Never load the protected dex through InMemoryDexClassLoader; always write
+    // the zip to code_cache. Set by --disable-inmemory-dex or the protect
+    // config. Read by native read_shell_config.
+    @JSONField(name = "disable_inmemory_dex")
+    private boolean disableInmemoryDex;
+
     private ShellConfig() {
     }
 
@@ -108,6 +114,7 @@ public class ShellConfig {
         this.signatureConfig = shellConfig.getSignatureConfig();
         this.appSignSha256 = shellConfig.getAppSignSha256();
         this.riskCheckFlags = shellConfig.getRiskCheckFlags();
+        this.disableInmemoryDex = shellConfig.isDisableInmemoryDex();
     }
 
     public String getSlashShellPackageName() {
@@ -179,6 +186,14 @@ public class ShellConfig {
         this.riskCheckFlags = riskCheckFlags;
     }
 
+    public boolean isDisableInmemoryDex() {
+        return disableInmemoryDex;
+    }
+
+    public void setDisableInmemoryDex(boolean disableInmemoryDex) {
+        this.disableInmemoryDex = disableInmemoryDex;
+    }
+
     public String getJniSlashClassName() {
         return String.format(Locale.US, "%s/%s",
                 getSlashShellPackageName(),
@@ -202,6 +217,7 @@ public class ShellConfig {
         jsonObject.put("dex_sign", getDexSign());
         jsonObject.put("junk_cls_name", getJunkClassName());
         jsonObject.put("risk_check_flags", getRiskCheckFlags());
+        jsonObject.put("disable_inmemory_dex", isDisableInmemoryDex());
         return jsonObject.toString();
     }
 
