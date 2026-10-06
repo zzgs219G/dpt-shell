@@ -162,3 +162,6 @@ executable/
 - 后续任务与设计见 `docs/进度与交接.md`（执行进度与交接，含 Task 1.4 实施记录与性能基准）
   与 `docs/phase1-perf-plan.md`（性能优化方案，唯一执行依据）
 - v1.0.1~1.0.3 启动闪退的根因与修复见 `docs/启动闪退根因分析.md`
+- **v1.0.5 内存路径 VerifyError 已修复并真机验证**（2026-10-06，Android 16）：
+  根因是 ART 不暴露注册 buffer 地址导致 gate 白名单拒绝，修复见
+  `docs/启动闪退根因分析.md` §9 与 `docs/进度与交接.md` §10

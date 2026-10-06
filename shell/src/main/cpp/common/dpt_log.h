@@ -24,6 +24,16 @@ inline const char* getThreadName() {
         __android_log_print(_level,TAG,"[%s] %s() %s", getThreadName(), __FUNCTION__, logBuffer);  \
 } while(false)
 
+// Always compiled in, for BOTH debug and release builds.
+//
+// Release builds compile DLOGI/DLOGE/NLOG away entirely, which made every
+// failure in the shell invisible in logcat (the v1.0.5 VerifyError shipped
+// with zero dpt trail, see docs/启动闪退根因分析.md §9). ELOG is reserved
+// for paths that can only be reached when something is actually wrong --
+// gate rejects, payload/decrypt failures, hook install failures. Normal
+// startups print nothing through it, so keep call sites few and failure-only.
+#define ELOG(...) DLOG(ANDROID_LOG_ERROR,__VA_ARGS__)
+
 #ifdef DEBUG
 
 #define DLOGI(...) DLOG(ANDROID_LOG_INFO,__VA_ARGS__)

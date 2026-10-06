@@ -43,7 +43,7 @@ static bool is_shell_dex_location(const std::string &location, const uint8_t *be
         // A silent reject here means the protected classes keep their random
         // filler and surface later as a VerifyError with nothing pointing
         // back to this gate (release builds compile this log out).
-        DLOGE("anonymous dex not registered as shell dex: begin=%p, loc=%s",
+        ELOG("anonymous dex not registered as shell dex: begin=%p, loc=%s",
               (const void *) begin, location.c_str());
         return false;
     }
@@ -166,7 +166,7 @@ static void change_dex_protective(uint8_t *begin, uint64_t dexSize,
     for (int i = 0; i < 10;) {
         int ret = dpt_mprotect(begin, begin + dexSize, PROT_READ | PROT_WRITE);
         if (ret != 0) {
-            DLOGE("mprotect fail, dex[%d] address: %p, reason: %d!", dexIndex, begin, ret);
+            ELOG("mprotect fail, dex[%d] address: %p, reason: %d!", dexIndex, begin, ret);
             i++;
         } else {
             DLOGD("mprotect success, dex[%d] address: %p.", dexIndex, begin);
@@ -204,7 +204,7 @@ void patchMethodInsns(uint8_t *begin,
     auto *dexCode = data::MultiDexCode::getInst();
     if (UNLIKELY(!dexCode->cryptInsns(g_shell_config.aes_key, methodIdx,
                                       enc, insnsSize, realInsnsPtr))) {
-        DLOGE("decrypt insns failed, methodIndex = %d, size = %d",
+        ELOG("decrypt insns failed, methodIndex = %d, size = %d",
               methodIdx, insnsSize);
     }
 }
@@ -313,7 +313,7 @@ void patchOneClassMethod(uint8_t *begin,
         // No dex index here: entry->dexIdx already identifies the dex, and pulling
         // it from the ClassIndexEntry avoids a parameter that the success path
         // never reads (-Wunused-parameter is fatal in CI).
-        DLOGE("payload order mismatch: dex=%u code=%u payload=%u",
+        ELOG("payload order mismatch: dex=%u code=%u payload=%u",
               entry->dexIdx, method.method_idx_delta_, view.methodIdx);
         return;
     }
@@ -334,7 +334,7 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
         char ch = descriptor[descriptorLength - 2];
         DLOGD("Attempt patch junk class %s ,char is '%c'",descriptor,ch);
         if(isdigit(ch)) {
-            DLOGE("Find illegal call, desc: %s!", descriptor);
+            ELOG("Find illegal call, desc: %s!", descriptor);
             dpt_crash();
             return;
         }
@@ -365,7 +365,7 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
         }
 
         if(UNLIKELY(begin == nullptr || dexSize == 0)) {
-            DLOGW("bad dex file: begin=%p size=%llu", begin, (unsigned long long)dexSize);
+            ELOG("bad dex file: begin=%p size=%llu", begin, (unsigned long long)dexSize);
             return;
         }
 
@@ -485,7 +485,7 @@ DPT_ENCRYPT bool hook_LoadClass() {
     loadClassAddress = DobbySymbolResolver(classLinkerPath, sym);
 
     if(loadClassAddress == nullptr) {
-        DLOGE("LoadClass address is null, sym: %s", sym);
+        ELOG("LoadClass address is null, sym: %s", sym);
         return false;
     }
 
@@ -540,7 +540,7 @@ DPT_ENCRYPT bool hook_DefineClass() {
     void* defineClassAddress = DobbySymbolResolver(classLinkerPath, sym);
 
     if(defineClassAddress == nullptr) {
-        DLOGE("defineClass address is null, sym: %s", sym);
+        ELOG("defineClass address is null, sym: %s", sym);
         return false;
     }
 
@@ -557,7 +557,7 @@ DPT_ENCRYPT bool hook_DefineClass() {
         return true;
     }
     else {
-        DLOGE("hook fail!");
+        ELOG("hook fail!");
         return false;
     }
 }
@@ -613,7 +613,7 @@ DPT_ENCRYPT void hook_mmap(){
         DLOGD("mmap hook success!");
     }
     else {
-        DLOGE("mmap hook fail!");
+        ELOG("mmap hook fail!");
     }
 }
 
@@ -660,7 +660,7 @@ DPT_ENCRYPT void hook_execve(){
         DLOGD("execve hook success!");
     }
     else {
-        DLOGE("execve hook fail!");
+        ELOG("execve hook fail!");
     }
 }
 
@@ -676,6 +676,6 @@ DPT_ENCRYPT void hook_write(){
         DLOGD("write hook success!");
     }
     else {
-        DLOGE("write hook fail!");
+        ELOG("write hook fail!");
     }
 }

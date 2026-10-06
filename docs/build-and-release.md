@@ -67,6 +67,30 @@ AGP 读的是 `source.properties` 和目录名里的版本号。
 ./gradlew :dpt:test
 ```
 
+### 诊断构建：带全量日志的 debug so
+
+正常 `./gradlew build` 是 release 构建，**所有 `DLOGI/DLOGD/DLOGE/NLOG` 在编译期
+被移除**（`CMakeLists.txt` 只在 Debug 定义 `-DDEBUG`，见 `common/dpt_log.h`）。
+需要 Info/Debug 级逐类逐方法日志时，产出诊断包：
+
+```bash
+./gradlew shell:assembleDebug
+java -jar executable/dpt.jar -f app.apk    # 正常打包，得到带全量日志的 APK
+```
+
+- `shell/build.gradle:215-219` 对 `assembleDebug` 有专门分支，debug so/dex 会照常
+  拷进 `executable/shell-files/`，与 `dpt.jar` 配对打包。
+- **坑 1**：`shell/build.gradle:198` 只看**第一个**任务名，必须单独执行，
+  不要与其他任务组合（如 `./gradlew build shell:assembleDebug` 会走错分支）。
+- **坑 2**：Debug 与 Release 行为不完全等价——`dpt.cpp` 的 `junkCodeDexProtect`
+  是 `#ifndef DEBUG`（debug 包**跳过** junk 校验），Release 另有 `-Oz`/符号剥离。
+  debug 包复现不了的问题，不等于 release 没有。
+- **状态：入口存在于代码中，但从未实际验证过**（写入文档时无构建机会）。
+
+与 `ELOG` 的分工：release 包的**失败分支**日志（`ELOG`，`common/dpt_log.h`）常开，
+崩溃的第一现场直接 `adb logcat -s dpt_native` 看；debug so 用于需要详细过程日志
+的深挖场景。
+
 ### ⚠️ 不要用 `./gradlew assemble`
 
 README 第 19-27 行写的是 `./gradlew assemble`，**这是过时的**，会产出不完整的

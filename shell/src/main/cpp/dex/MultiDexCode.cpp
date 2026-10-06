@@ -29,7 +29,7 @@ void dpt::data::MultiDexCode::init(uint8_t* buffer, size_t size){
     m_crypt_insns = nullptr;
 
     if (m_buffer == nullptr || m_size < DPT_MULTI_DEX_CODE_HEADER_SIZE) {
-        DLOGE("OoooooOooo too small: %zu", size);
+        ELOG("OoooooOooo too small: %zu", size);
         return;
     }
 
@@ -39,7 +39,7 @@ void dpt::data::MultiDexCode::init(uint8_t* buffer, size_t size){
     // v4 only. A v2/v3 payload has a different layout, so accepting it here
     // would make every offset below point at the wrong bytes.
     if (magic != DPT_MULTI_DEX_CODE_MAGIC || m_version != DPT_MULTI_DEX_CODE_VERSION_V4) {
-        DLOGE("unsupported OoooooOooo: magic=0x%x version=%u", magic, m_version);
+        ELOG("unsupported OoooooOooo: magic=0x%x version=%u", magic, m_version);
         m_version = 0;
         return;
     }
@@ -52,7 +52,7 @@ void dpt::data::MultiDexCode::init(uint8_t* buffer, size_t size){
     if (m_classIndexOffset < DPT_MULTI_DEX_CODE_HEADER_SIZE
             || m_methodDataOffset < m_classIndexOffset
             || m_methodDataOffset > m_size) {
-        DLOGE("corrupt OoooooOooo offsets: ci=%u md=%u size=%zu",
+        ELOG("corrupt OoooooOooo offsets: ci=%u md=%u size=%zu",
               m_classIndexOffset, m_methodDataOffset, m_size);
         m_classIndexOffset = 0;
         m_methodDataOffset = 0;
@@ -163,7 +163,7 @@ bool dpt::data::MultiDexCode::cryptInsns(const uint8_t *key,
                                          size_t inlen,
                                          uint8_t *out) const {
     if (m_crypt_insns == nullptr) {
-        DLOGE("insns crypt routine is not initialized");
+        ELOG("insns crypt routine is not initialized");
         return false;
     }
     return m_crypt_insns(key, methodIdx, in, inlen, out);

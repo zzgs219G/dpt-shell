@@ -11,20 +11,20 @@ std::vector<uint8_t> hmac_sha256(const uint8_t *key,
                                  const uint8_t *input,
                                  size_t input_len) {
     if (key == nullptr || key_len == 0 || input == nullptr || input_len == 0) {
-        DLOGE("invalid hmac input");
+        ELOG("invalid hmac input");
         return {};
     }
 
     const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (md_info == nullptr) {
-        DLOGE("mbedtls sha256 unavailable");
+        ELOG("mbedtls sha256 unavailable");
         return {};
     }
 
     std::vector<uint8_t> out(32);
     int ret = mbedtls_md_hmac(md_info, key, key_len, input, input_len, out.data());
     if (ret != 0) {
-        DLOGE("hmac-sha256 failed: %d", ret);
+        ELOG("hmac-sha256 failed: %d", ret);
         return {};
     }
     return out;
@@ -36,11 +36,11 @@ std::vector<uint8_t> aes_cbc_decrypt(const uint8_t *key,
                                      const uint8_t *in,
                                      size_t inlen) {
     if (key == nullptr || iv == nullptr || in == nullptr || inlen == 0 || (inlen % 16) != 0) {
-        DLOGE("invalid aes cbc input");
+        ELOG("invalid aes cbc input");
         return {};
     }
     if (key_bits != 128 && key_bits != 192 && key_bits != 256) {
-        DLOGE("unsupported aes key bits: %zu", key_bits);
+        ELOG("unsupported aes key bits: %zu", key_bits);
         return {};
     }
 
@@ -55,7 +55,7 @@ std::vector<uint8_t> aes_cbc_decrypt(const uint8_t *key,
         DLOGD("set key success");
     }
     else {
-        DLOGE("set key fail");
+        ELOG("set key fail");
         mbedtls_aes_free(&ctx);
         return {};
     }
@@ -69,7 +69,7 @@ std::vector<uint8_t> aes_cbc_decrypt(const uint8_t *key,
         DLOGD("decrypt ret: %d", ret);
     }
     else {
-        DLOGE("decrypt fail");
+        ELOG("decrypt fail");
         mbedtls_aes_free(&ctx);
         return {};
     }
@@ -80,7 +80,7 @@ std::vector<uint8_t> aes_cbc_decrypt(const uint8_t *key,
         if (pad > 0 && pad <= 16 && pad <= out_vec.size()) {
             out_vec.resize(out_vec.size() - pad);
         } else {
-            DLOGE("invalid padding");
+            ELOG("invalid padding");
             mbedtls_aes_free(&ctx);
             return {};
         }
@@ -120,7 +120,7 @@ bool chacha20_crypt_insns(const uint8_t *key,
     // encrypts and decrypts, so output may alias input.
     int ret = mbedtls_chacha20_crypt(key, nonce, 0, inlen, in, out);
     if (ret != 0) {
-        DLOGE("chacha20 crypt failed: %d", ret);
+        ELOG("chacha20 crypt failed: %d", ret);
         return false;
     }
     return true;

@@ -335,18 +335,18 @@ writeDexAchieve(const char *dexAchievePath, void *package_addr, size_t package_s
                 fwrite(zipDataStart, 1, zipDataLen, fp);
                 DLOGD("Zip file extracted and written successfully.");
             } else {
-                DLOGE("Invalid zip data length: %u. dex_files_size: %lu", (unsigned int) zipDataLen,
+                ELOG("Invalid zip data length: %u. dex_files_size: %lu", (unsigned int) zipDataLen,
                       (unsigned long) entry_size);
             }
 
             delete[] entry_data;
         } else {
-            DLOGE("Failed to read classes.dex.");
+            ELOG("Failed to read classes.dex.");
         }
         fclose(fp);
 
     } else {
-        DLOGE("WTF! zipCode write fail: %s", strerror(errno));
+        ELOG("WTF! zipCode write fail: %s", strerror(errno));
     }
 }
 
@@ -371,7 +371,7 @@ DPT_ENCRYPT void extractDexesInNeeded(JNIEnv *env, void *package_addr, size_t pa
             writeDexAchieve(compressedDexesPathChs, package_addr, package_size);
             chmod(compressedDexesPathChs, 0444);
         } else {
-            DLOGE("WTF! extractDexes cannot make code_cache directory!");
+            ELOG("WTF! extractDexes cannot make code_cache directory!");
         }
     }
 }
@@ -385,7 +385,7 @@ DPT_ENCRYPT static void
 load_zip_by_mmap(const char *zip_file_path, void **zip_addr, size_t *zip_size) {
     int fd = open(zip_file_path, O_RDONLY);
     if (fd <= 0) {
-        DLOGE("cannot open file!");
+        ELOG("cannot open file!");
         return;
     }
     struct stat fst;
@@ -401,7 +401,7 @@ load_zip_by_mmap(const char *zip_file_path, void **zip_addr, size_t *zip_size) {
     close(fd);
 
     if (mapped == MAP_FAILED) {
-        DLOGE("mmap failed!");
+        ELOG("mmap failed!");
         *zip_addr = nullptr;
         *zip_size = 0;
         return;
@@ -547,7 +547,7 @@ void get_elf_section(Elf_Shdr *target, const char *elf_path, const char *sh_name
     }
 
     if (!found) {
-        DLOGE("cannot find section: %s", sh_name);
+        ELOG("cannot find section: %s", sh_name);
     }
     free(data);
     fclose(elf_fp);

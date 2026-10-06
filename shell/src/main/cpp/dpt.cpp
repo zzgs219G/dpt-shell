@@ -117,7 +117,7 @@ DPT_ENCRYPT void combineDexElements(JNIEnv* env, jclass klass, jobject targetCla
         // Task 1.4 fallback: in-memory loading failed, so the zip was never
         // (or could not be) prepared. Write it now, then take the regular
         // on-disk path below.
-        DLOGW("in-memory dex combine failed, falling back to %s", DEXES_ZIP_NAME);
+        ELOG("in-memory dex combine failed, falling back to %s", DEXES_ZIP_NAME);
         g_use_in_memory_dex = false;
         pthread_mutex_lock(&g_write_dexes_mutex);
         void *package_addr = nullptr;
@@ -600,7 +600,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     size_t package_size = 0;
     ensure_package_loaded(env, &package_addr, &package_size);
     if (package_addr == nullptr || package_size == 0) {
-        DLOGE("in-memory dex: apk mapping unavailable");
+        ELOG("in-memory dex: apk mapping unavailable");
         release_package(package_addr, package_size);
         return false;
     }
@@ -609,7 +609,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
                                      AY_OBFUSCATE(COMBINE_DEX_FILES_NAME_IN_ZIP));
     release_package(package_addr, package_size);
     if (!entry.has_value()) {
-        DLOGE("in-memory dex: no %s in apk", COMBINE_DEX_FILES_NAME_IN_ZIP);
+        ELOG("in-memory dex: no %s in apk", COMBINE_DEX_FILES_NAME_IN_ZIP);
         return false;
     }
 
@@ -620,7 +620,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
 
     uint32_t zip_len = readZipLength(entry_data, entry_size);
     if (zip_len == 0 || entry_size <= (size_t) zip_len + 4) {
-        DLOGE("in-memory dex: bad embedded zip length %u (entry size %zu)",
+        ELOG("in-memory dex: bad embedded zip length %u (entry size %zu)",
               zip_len, entry_size);
         return false;
     }
@@ -633,7 +633,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     void *mem_stream = mz_stream_mem_create();
     void *zip_handle = mem_stream != nullptr ? mz_zip_create() : nullptr;
     if (mem_stream == nullptr || zip_handle == nullptr) {
-        DLOGE("in-memory dex: minizip alloc failed");
+        ELOG("in-memory dex: minizip alloc failed");
         mz_zip_delete(&zip_handle);
         mz_stream_mem_delete(&mem_stream);
         return false;
@@ -655,7 +655,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
             int dex_number = in_memory_dex_number(file_info->filename);
             if (dex_number < 0 || dex_number > 255) {
                 // e.g. a stray junkcode.dex; the on-disk path handles those.
-                DLOGE("in-memory dex: unexpected entry name '%s'", file_info->filename);
+                ELOG("in-memory dex: unexpected entry name '%s'", file_info->filename);
                 entry_names_ok = false;
                 break;
             }
@@ -663,7 +663,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
             if (file_info->uncompressed_size > 0) {
                 err = mz_zip_entry_read_open(zip_handle, 0, nullptr);
                 if (err != MZ_OK) {
-                    DLOGE("in-memory dex: open '%s' failed: %d", file_info->filename, err);
+                    ELOG("in-memory dex: open '%s' failed: %d", file_info->filename, err);
                     break;
                 }
                 auto buffer = std::make_unique<uint8_t[]>(file_info->uncompressed_size);
@@ -671,7 +671,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
                                                   (int32_t) file_info->uncompressed_size);
                 mz_zip_entry_close(zip_handle);
                 if (nread != (int32_t) file_info->uncompressed_size) {
-                    DLOGE("in-memory dex: short read of '%s' (%d/" FMT_INT64_T ")",
+                    ELOG("in-memory dex: short read of '%s' (%d/" FMT_INT64_T ")",
                           file_info->filename, nread, file_info->uncompressed_size);
                     break;
                 }
@@ -680,7 +680,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
             err = mz_zip_goto_next_entry(zip_handle);
         }
     } else {
-        DLOGE("in-memory dex: embedded zip open failed: %d", err);
+        ELOG("in-memory dex: embedded zip open failed: %d", err);
     }
 
     bool iterate_ok = (err == MZ_END_OF_LIST);
@@ -689,7 +689,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     mz_stream_mem_delete(&mem_stream);
 
     if (!entry_names_ok || !iterate_ok || dexes.empty()) {
-        DLOGE("in-memory dex: zip read failed (names=%d, done=%d, count=%zu)",
+        ELOG("in-memory dex: zip read failed (names=%d, done=%d, count=%zu)",
               entry_names_ok, iterate_ok, dexes.size());
         return false;
     }
@@ -700,7 +700,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     int expect = 0;
     for (auto &kv : dexes) {
         if (kv.first != expect) {
-            DLOGE("in-memory dex: dex indices not contiguous (%d != %d)", kv.first, expect);
+            ELOG("in-memory dex: dex indices not contiguous (%d != %d)", kv.first, expect);
             return false;
         }
         expect++;
@@ -712,13 +712,13 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     jclass byteBufferCls = jni::FindClass(env, "java/nio/ByteBuffer");
     if (byteBufferCls == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: java/nio/ByteBuffer not found");
+        ELOG("in-memory dex: java/nio/ByteBuffer not found");
         return false;
     }
     jobjectArray buffers = env->NewObjectArray((jsize) dexes.size(), byteBufferCls, nullptr);
     if (buffers == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: NewObjectArray failed");
+        ELOG("in-memory dex: NewObjectArray failed");
         return false;
     }
 
@@ -728,7 +728,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
                                                           (jlong) kv.second.second);
         if (direct_buffer == nullptr) {
             if (env->ExceptionCheck()) env->ExceptionClear();
-            DLOGE("in-memory dex: NewDirectByteBuffer failed for dex %d", kv.first);
+            ELOG("in-memory dex: NewDirectByteBuffer failed for dex %d", kv.first);
             return false;
         }
         env->SetObjectArrayElement(buffers, buffer_index++, direct_buffer);
@@ -738,7 +738,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     jclass loaderCls = jni::FindClass(env, "dalvik/system/InMemoryDexClassLoader");
     if (loaderCls == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: InMemoryDexClassLoader not found");
+        ELOG("in-memory dex: InMemoryDexClassLoader not found");
         return false;
     }
     jobject memLoader = jni::NewObject(env, loaderCls,
@@ -746,7 +746,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
                                        buffers, targetClassLoader);
     if (env->ExceptionCheck()) env->ExceptionClear();
     if (memLoader == nullptr) {
-        DLOGE("in-memory dex: InMemoryDexClassLoader construction failed");
+        ELOG("in-memory dex: InMemoryDexClassLoader construction failed");
         return false;
     }
 
@@ -764,7 +764,7 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
         // OOM: the loader could be collected while the spliced elements still
         // point into it. Bail out before the buffers leave unique_ptr
         // ownership, so the fallback path frees them normally.
-        DLOGE("in-memory dex: NewGlobalRef failed");
+        ELOG("in-memory dex: NewGlobalRef failed");
         return false;
     }
     for (auto &kv : dexes) {
@@ -778,19 +778,19 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     jobject memPathListObj = memBase.getPathList();
     if (memPathListObj == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: temporary loader has no pathList");
+        ELOG("in-memory dex: temporary loader has no pathList");
         return false;
     }
     reflect::dalvik_system_DexPathList memPathList(env, memPathListObj);
     jobjectArray memElements = memPathList.getDexElements();
     if (memElements == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: temporary loader has no elements");
+        ELOG("in-memory dex: temporary loader has no elements");
         return false;
     }
     jsize memSize = env->GetArrayLength(memElements);
     if (memSize <= 0) {
-        DLOGE("in-memory dex: no elements produced");
+        ELOG("in-memory dex: no elements produced");
         return false;
     }
 
@@ -798,14 +798,14 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     jobject targetPathListObj = targetBase.getPathList();
     if (targetPathListObj == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: target pathList missing");
+        ELOG("in-memory dex: target pathList missing");
         return false;
     }
     reflect::dalvik_system_DexPathList targetPathList(env, targetPathListObj);
     jobjectArray originElements = targetPathList.getDexElements();
     if (originElements == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: target dexElements missing");
+        ELOG("in-memory dex: target dexElements missing");
         return false;
     }
     jsize originSize = env->GetArrayLength(originElements);
@@ -814,13 +814,13 @@ DPT_ENCRYPT static bool combineInMemoryDexElements(JNIEnv *env, jobject targetCl
     jclass elementClass = element.getClass();
     if (elementClass == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: DexPathList$Element not found");
+        ELOG("in-memory dex: DexPathList$Element not found");
         return false;
     }
     jobjectArray newElements = env->NewObjectArray(originSize + memSize, elementClass, nullptr);
     if (newElements == nullptr) {
         if (env->ExceptionCheck()) env->ExceptionClear();
-        DLOGE("in-memory dex: NewObjectArray failed");
+        ELOG("in-memory dex: NewObjectArray failed");
         return false;
     }
 
@@ -885,7 +885,7 @@ DPT_ENCRYPT void init_app(JNIEnv *env, jclass __unused) {
 DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
 
     if (data == nullptr || data_len < 16) {
-        DLOGE("OoooooOooo invalid: data=%p len=%zu", data, data_len);
+        ELOG("OoooooOooo invalid: data=%p len=%zu", data, data_len);
         return;
     }
 
@@ -896,7 +896,7 @@ DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
     dexCode->init(data, data_len);
 
     if (!dexCode->isValid()) {
-        DLOGE("OoooooOooo rejected by init; insns will not be restored");
+        ELOG("OoooooOooo rejected by init; insns will not be restored");
         return;
     }
     DLOGI("OoooooOooo v4 ready: version = %d, dexCount = %d, classes = %u",
@@ -916,7 +916,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             reflect::android_app_ActivityThread activityThread(env);
             jobject mBoundApplicationObj = activityThread.getBoundApplication();
             if (mBoundApplicationObj == nullptr) {
-                DLOGE("bound application is null");
+                ELOG("bound application is null");
                 release_package(package_addr, package_size);
                 return;
             }
@@ -924,7 +924,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             reflect::android_app_ActivityThread::AppBindData appBindData(env, mBoundApplicationObj);
             jobject appInfoObj = appBindData.getAppInfo();
             if (appInfoObj == nullptr) {
-                DLOGE("app info is null");
+                ELOG("app info is null");
                 release_package(package_addr, package_size);
                 return;
             }
@@ -932,14 +932,14 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             reflect::android_content_pm_ApplicationInfo applicationInfo(env, appInfoObj);
             jstring packageNameJstr = applicationInfo.getPackageName();
             if (packageNameJstr == nullptr) {
-                DLOGE("package name is null");
+                ELOG("package name is null");
                 release_package(package_addr, package_size);
                 return;
             }
 
             const char *packageNameChs = env->GetStringUTFChars(packageNameJstr, nullptr);
             if (packageNameChs == nullptr || packageNameChs[0] == '\0') {
-                DLOGE("package name is empty");
+                ELOG("package name is empty");
                 if (packageNameChs != nullptr) {
                     env->ReleaseStringUTFChars(packageNameJstr, packageNameChs);
                 }
@@ -959,7 +959,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                                        reinterpret_cast<const uint8_t *>(key_material.data()),
                                        key_material.size());
             if (aes_key.size() != 32) {
-                DLOGE("derive config aes key failed");
+                ELOG("derive config aes key failed");
                 release_package(package_addr, package_size);
                 return;
             }
@@ -973,7 +973,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             iv[9] = 0x76;
             auto decrypted_data = aes_cbc_decrypt(aes_key.data(), 256, iv, indata.data(), entry_size);
             if (decrypted_data.empty()) {
-                DLOGE("decrypt shell config failed");
+                ELOG("decrypt shell config failed");
                 release_package(package_addr, package_size);
                 return;
             }
@@ -1009,7 +1009,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 DLOGD("risk_check_flags = 0x%x", g_shell_config.risk_check_flags);
                 DLOGD("disable_inmemory_dex = %d", g_shell_config.disable_inmemory_dex ? 1 : 0);
             } catch (const std::exception &e) {
-                DLOGE("parse shell config failed: %s", e.what());
+                ELOG("parse shell config failed: %s", e.what());
             }
         }
     }
