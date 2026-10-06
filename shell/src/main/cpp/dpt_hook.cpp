@@ -684,13 +684,33 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                         locks.emplace_back(dpt::getPageLock(page));
                     }
 
+                    // Whether the RW window must be CLOSED again afterwards.
+                    // Deliberately not "whether it is opened": the window is
+                    // opened unconditionally below.
+                    //
+                    // Only the file-path dex is a private read-only mapping that
+                    // has to be restored. An in-memory dex sits in the native
+                    // heap, already writable and sharing its pages with
+                    // unrelated allocations, so flipping it back to PROT_READ
+                    // would fault the next writer.
+                    //
+                    // Gating the OPEN on this test is what crashed v1.0.8: ART
+                    // maps the file dex as
+                    // ".../Anonymous-DexFile@<n>.jar!classesN.dex", so the
+                    // DEXES_ZIP_NAME test says "in-memory", the window was
+                    // never opened, and the restore wrote to a read-only page
+                    // (SIGSEGV / SEGV_ACCERR).
                     const bool restoreRead =
                             is_file_dex_location(location);
 
                     // Crash diagnostics: record the state the fault handler
                     // reports. Assignment only -- no branch, no control flow.
                     g_last_restore_read = restoreRead ? 1 : 0;
-                    g_last_mprotect = restoreRead ? 0 : -1;
+                    // The RW window is about to be opened, unconditionally.
+                    // 0 means "opening attempted", not "open": this is assigned
+                    // before the first mprotect below, so a fault in between
+                    // would still report 0.
+                    g_last_mprotect = 0;
                     // Reached only inside if (!patches.empty()). Note this is
                     // the FIRST method collected for the class, not necessarily
                     // the one being patched when a fault happens.
@@ -719,8 +739,22 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                         }
                         const uintptr_t segEnd = *std::prev(next) + pageSize;
 
-                        if (restoreRead &&
-                            UNLIKELY(dpt_mprotect((void *) segStart, (void *) segEnd,
+                        // Unconditional: the window must be open before any
+                        // write. Gating this on restoreRead is what crashed
+                        // v1.0.8 (see the note where restoreRead is computed).
+                        //
+                        // For an in-memory dex this does not change the
+                        // permission -- the heap buffer is already writable --
+                        // but it is not free: the syscall still runs once per
+                        // segment under the class-loader lock, and it now
+                        // introduces a failure mode this path did not have
+                        // before. A non-zero return abandons the whole class
+                        // (windowOpen = false), leaving every method encrypted,
+                        // which would surface as a VerifyError (inferred, NOT
+                        // verified -- same failure shape the gate rejects
+                        // produce). That trade is deliberate: skipping the open
+                        // is what crashed us.
+                        if (UNLIKELY(dpt_mprotect((void *) segStart, (void *) segEnd,
                                                   PROT_READ | PROT_WRITE) != 0)) {
                             // Crash diagnostics: the RW window never opened for
                             // this class; a later fault here is expected.
@@ -730,9 +764,15 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                             // than restoring only part of it.
                             ELOG("mprotect RW fail: dex=%d page=" FMT_POINTER,
                                  dexIndex, segStart);
-                            for (const auto &done : segments) {
-                                dpt_mprotect((void *) done.first, (void *) done.second,
-                                             PROT_READ);
+                            // Undo only the permissions we changed. An in-memory
+                            // dex was already writable and its pages are shared
+                            // with unrelated allocations, so putting it back to
+                            // PROT_READ here would fault the next writer.
+                            if (restoreRead) {
+                                for (const auto &done : segments) {
+                                    dpt_mprotect((void *) done.first, (void *) done.second,
+                                                 PROT_READ);
+                                }
                             }
                             windowOpen = false;
                             break;
