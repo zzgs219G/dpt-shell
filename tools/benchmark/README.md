@@ -103,7 +103,7 @@ tools/benchmark/bench-runtime.sh com.example.app com.example.app/.MainActivity
 这三条比脚本本身更重要：
 
 1. **基线要先拿到。** 一旦开始改代码，基线就永久失去了。
-   第一件事是测当前 `main` 并填进 `docs/phase1-benchmark.md`。
+   第一件事是测当前 `main` 并填进 `docs/进度与交接.md` §7（性能基准）。
 
 2. **锁定变量。** 同一台设备、同一份 APK（记 hash）、同一 ROM。
    **系统升级后测得的数字不可与之前比较。**

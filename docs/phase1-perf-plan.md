@@ -3,6 +3,18 @@
 本方案基于 `docs/开发工程计划书.md`（初稿）与 `docs/开发工程审核.md`（审核），
 逐条对照**真实源码**与 **AOSP 官方源码**复核后重写。
 
+> 上述两份初稿**未入库**（`git log --all` 与工作区均查无此文件）；本文档为唯一执行依据。
+>
+> **文件去向**（避免下一任去找不存在的文件）：
+> - `phase1-progress.md`、`phase1-benchmark.md` 曾入库，已删除并入 `进度与交接.md`
+>   （分别对应 §开头交接 与 §7）；`task-1.4.md` 未入库，其内容全在 `进度与交接.md` §4。
+>   本文档对这三个名字的引用一律指 `进度与交接.md` 对应小节。
+> - `task-1.1.md` / `task-1.3.md` / `task-1.5.md` / `task-1.7.md`~`task-1.9.md`
+>   **从未产出**（下文 ☐ 未勾即此意）；实际实施记录见 `进度与交接.md`
+>   （§4 = Task 1.4，§8.2 = Task 1.5）。
+> - `phase1-test.md` / `phase1-design.md` **已于 2026-10-07 产出**（Task 1.6）；
+>   `phase1-benchmark.md` 的数据填在 `进度与交接.md` §7。
+
 - 初稿保留为历史记录，本文档为**唯一执行依据**
 - 审核指出的 5 条阻断性错误全部成立，本文档已全部吸收（见第一章 1.7）
 - 复核过程中**新发现 4 条审核未覆盖的阻断性问题**，本文档一并修正（见第一章 1.8）
@@ -1443,6 +1455,12 @@ __builtin___clear_cache((const char*)segStart, (const char*)segEnd);
 
 ## 六、Task 1.6：集成验收
 
+> **已执行（2026-10-07）**，完整报告与原始数据见 `docs/phase1-test.md`。
+> 摘要：6.1 打包对比 **−24.7%（未达 −30%）**，其余项通过（本机 build 以 CI
+> run #26 绿替代）；6.2 冷启动 **+299ms**、内存 **+240MB 级** 两项未达标，
+> 启动/解密行为/code_cache ✅，RW 窗口与 mmap 次数仍 ⏳；
+> 6.3 矩阵仅 Android 16 / arm64 / APK / 21-dex 覆盖（其余 ⏳）。
+
 ### 6.1 第一层：本机可做（必须全过）
 
 | 项 | 命令 | 通过标准 |
@@ -1486,9 +1504,9 @@ __builtin___clear_cache((const char*)segStart, (const char*)segEnd);
 
 ### 6.4 输出物
 
-- ☐ `docs/phase1-test.md`
-- ☐ `docs/phase1-benchmark.md`
-- ☐ `docs/phase1-design.md`
+- ☑ `docs/phase1-test.md`（2026-10-07 产出）
+- ☑ `docs/phase1-benchmark.md` → 数据已填入 `进度与交接.md` §7（文件已并入，见计划书文档头注）
+- ☑ `docs/phase1-design.md`（2026-10-07 产出）
 
 ---
 

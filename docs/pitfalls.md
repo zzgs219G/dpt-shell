@@ -30,10 +30,11 @@
 
 **[CI] + [推理]**
 
-仓库 `README.md` 第 19-27 行给的命令是过时的。
-`assemble*` 任务不触发 `afterAssembleCopy`（它挂在 `build` 任务上）。
+`assemble*` 任务不触发 `afterAssembleCopy`（它挂在 `build` 任务上），
+只会产出缺少 `shell-files/` 的不完整 `executable/`。
 
-**处理**：README 与 AGENTS.md 均已标注以 `./gradlew build` 为准。
+**处理**：一律 `./gradlew build`。README 中英文与 AGENTS.md 均已写此命令
+（`088079e` 起；旧版 README 给的 `./gradlew assemble` 已过时）。
 
 ---
 

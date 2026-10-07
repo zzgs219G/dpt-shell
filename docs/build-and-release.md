@@ -93,11 +93,12 @@ java -jar executable/dpt.jar -f app.apk    # 正常打包，得到带全量日�
 
 ### ⚠️ 不要用 `./gradlew assemble`
 
-README 第 19-27 行写的是 `./gradlew assemble`，**这是过时的**，会产出不完整的
-`executable/`：
+`assemble*` 任务会产出不完整的 `executable/`：
 
 - `executable/dpt.jar` ✅ 有
 - `executable/shell-files/` ❌ **没有**
+
+（README 第 19-27 行曾写 `./gradlew assemble`，`088079e` 起已改为 `./gradlew build`。）
 
 `shell-files/` 由 `shell/build.gradle` 的 `afterAssembleCopy` 生成，挂在
 **build 任务**（`assembleDebug` / `assembleRelease`）的 `doLast` 上。
