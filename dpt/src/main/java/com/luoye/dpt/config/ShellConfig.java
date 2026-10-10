@@ -35,11 +35,12 @@ public class ShellConfig {
     @JSONField(name = "risk_check_flags")
     private int riskCheckFlags;
 
-    // Never load the protected dex through InMemoryDexClassLoader; always write
-    // the zip to code_cache. Set by --disable-inmemory-dex or the protect
-    // config. Read by native read_shell_config.
-    @JSONField(name = "disable_inmemory_dex")
-    private boolean disableInmemoryDex;
+    // Opt in to loading the protected dex through InMemoryDexClassLoader (no
+    // code_cache write). Off by default: the on-disk path starts faster and is
+    // lighter on memory for multi-dex apps. Set by --use-inmemory-dex or the
+    // protect config. Read by native read_shell_config.
+    @JSONField(name = "use_inmemory_dex")
+    private boolean useInmemoryDex;
 
     private ShellConfig() {
     }
@@ -114,7 +115,7 @@ public class ShellConfig {
         this.signatureConfig = shellConfig.getSignatureConfig();
         this.appSignSha256 = shellConfig.getAppSignSha256();
         this.riskCheckFlags = shellConfig.getRiskCheckFlags();
-        this.disableInmemoryDex = shellConfig.isDisableInmemoryDex();
+        this.useInmemoryDex = shellConfig.isUseInmemoryDex();
     }
 
     public String getSlashShellPackageName() {
@@ -186,12 +187,12 @@ public class ShellConfig {
         this.riskCheckFlags = riskCheckFlags;
     }
 
-    public boolean isDisableInmemoryDex() {
-        return disableInmemoryDex;
+    public boolean isUseInmemoryDex() {
+        return useInmemoryDex;
     }
 
-    public void setDisableInmemoryDex(boolean disableInmemoryDex) {
-        this.disableInmemoryDex = disableInmemoryDex;
+    public void setUseInmemoryDex(boolean useInmemoryDex) {
+        this.useInmemoryDex = useInmemoryDex;
     }
 
     public String getJniSlashClassName() {
@@ -217,7 +218,7 @@ public class ShellConfig {
         jsonObject.put("dex_sign", getDexSign());
         jsonObject.put("junk_cls_name", getJunkClassName());
         jsonObject.put("risk_check_flags", getRiskCheckFlags());
-        jsonObject.put("disable_inmemory_dex", isDisableInmemoryDex());
+        jsonObject.put("use_inmemory_dex", isUseInmemoryDex());
         return jsonObject.toString();
     }
 

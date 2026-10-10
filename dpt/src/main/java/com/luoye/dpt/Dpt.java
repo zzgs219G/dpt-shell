@@ -124,7 +124,8 @@ public class Dpt {
         options.addOption(new Option(null, Const.OPTION_DISABLE_FRIDA_DETECT_LONG, false, "Disable runtime Frida detection.\n"));
         options.addOption(new Option(null, Const.OPTION_DISABLE_CRC_DETECT_LONG, false, "Disable runtime libc .text CRC detection.\n"));
         options.addOption(new Option(null, Const.OPTION_DISABLE_ANTI_DEBUG_LONG, false, "Disable runtime anti-debug.\n"));
-        options.addOption(new Option(null, Const.OPTION_DISABLE_INMEMORY_DEX_LONG, false, "Load the protected dex from code_cache instead of InMemoryDexClassLoader.\n"));
+        options.addOption(new Option(null, Const.OPTION_USE_INMEMORY_DEX_LONG, false, "Load the protected dex through InMemoryDexClassLoader instead of extracting it to code_cache. Off by default; on-disk loading is faster to start and lighter on memory for multi-dex apps.\n"));
+        options.addOption(new Option(null, Const.OPTION_DISABLE_INMEMORY_DEX_LONG, false, "Deprecated no-op; on-disk loading is the default.\n"));
 
         CommandLineParser commandLineParser = new DefaultParser();
         try {
@@ -182,7 +183,7 @@ public class Dpt {
                         .protectConfigFile(commandLine.getOptionValue(Const.OPTION_PROTECT_CONFIG))
                         .verifySign(commandLine.hasOption(Const.OPTION_VERIFY_SIGN))
                         .riskCheckFlags(riskCheckFlags)
-                        .disableInmemoryDex(commandLine.hasOption(Const.OPTION_DISABLE_INMEMORY_DEX_LONG))
+                        .useInmemoryDex(commandLine.hasOption(Const.OPTION_USE_INMEMORY_DEX_LONG))
                         .build();
             }
             else if(filePath.endsWith(".aab")) {
@@ -200,7 +201,7 @@ public class Dpt {
                         .protectConfigFile(commandLine.getOptionValue(Const.OPTION_PROTECT_CONFIG))
                         .verifySign(commandLine.hasOption(Const.OPTION_VERIFY_SIGN))
                         .riskCheckFlags(riskCheckFlags)
-                        .disableInmemoryDex(commandLine.hasOption(Const.OPTION_DISABLE_INMEMORY_DEX_LONG))
+                        .useInmemoryDex(commandLine.hasOption(Const.OPTION_USE_INMEMORY_DEX_LONG))
                         .build();
             }
             else {

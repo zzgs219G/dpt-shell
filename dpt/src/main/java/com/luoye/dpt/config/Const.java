@@ -48,7 +48,13 @@ public class Const {
     public static final String OPTION_DISABLE_FRIDA_DETECT_LONG = "disable-frida-detect";
     public static final String OPTION_DISABLE_CRC_DETECT_LONG = "disable-crc-detect";
     public static final String OPTION_DISABLE_ANTI_DEBUG_LONG = "disable-anti-debug";
+    // Deprecated no-op, kept for CLI compatibility: the on-disk path is now the
+    // default, so there is nothing left to disable.
     public static final String OPTION_DISABLE_INMEMORY_DEX_LONG = "disable-inmemory-dex";
+    // Opt in to InMemoryDexClassLoader loading (no code_cache write). Off by
+    // default: the on-disk path starts faster and uses less memory on
+    // multi-dex apps (Phase 1 findings).
+    public static final String OPTION_USE_INMEMORY_DEX_LONG = "use-inmemory-dex";
 
     // Risk check flags: one int, each bit is a switch (1 = disable)
     public static final int FLAG_DISABLE_FRIDA_DETECT = 1;

@@ -33,11 +33,12 @@ KEEP_SYMBOL DPT_DATA_SECTION uint8_t DPT_UNKNOWN_DATA[] = "1234567890abcdef";
 
 ShellConfig g_shell_config;
 
-// Task 1.4: when true, the protected dexes are loaded from the zip embedded
-// in classes.dex through InMemoryDexClassLoader elements instead of being
-// written to code_cache. Decided once in read_shell_config (API >= 29 and not
-// disabled by --disable-inmemory-dex); combineDexElements may only turn it
-// off, when it falls back to the on-disk path.
+// When true, the protected dexes are loaded from the zip embedded in
+// classes.dex through InMemoryDexClassLoader elements instead of being written
+// to code_cache. Off by default (opt in with --use-inmemory-dex or the
+// use_inmemory_dex config key); decided once in read_shell_config (API >= 29
+// and the flag on). combineDexElements may only turn it off, when it falls
+// back to the on-disk path.
 bool g_use_in_memory_dex = false;
 
 static JNINativeMethod gMethods[] = {
@@ -995,7 +996,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 const char *keyDexSign = AY_OBFUSCATE("dex_sign");
                 const char *keyJunkClsName = AY_OBFUSCATE("junk_cls_name");
                 const char *keyRiskCheckFlags = AY_OBFUSCATE("risk_check_flags");
-                const char *keyDisableInMemoryDex = AY_OBFUSCATE("disable_inmemory_dex");
+                const char *keyUseInMemoryDex = AY_OBFUSCATE("use_inmemory_dex");
                 g_shell_config.application_name = shell_config.value(keyAppName, "");
                 g_shell_config.application_component_factory = shell_config.value(keyAcfName, "");
                 g_shell_config.jni_class_name = shell_config.value(keyJniClsName, "");
@@ -1003,7 +1004,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 g_shell_config.dex_sign = shell_config.value(keyDexSign, "");
                 g_shell_config.junk_class_name = shell_config.value(keyJunkClsName, "");
                 g_shell_config.risk_check_flags = shell_config.value(keyRiskCheckFlags, 0);
-                g_shell_config.disable_inmemory_dex = shell_config.value(keyDisableInMemoryDex, false);
+                g_shell_config.use_inmemory_dex = shell_config.value(keyUseInMemoryDex, false);
 
                 DLOGD("application_name = %s", g_shell_config.application_name.c_str());
                 DLOGD("application_component_factory = %s", g_shell_config.application_component_factory.c_str());
@@ -1012,7 +1013,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 DLOGD("dex_sign = %s", g_shell_config.dex_sign.c_str());
                 DLOGD("junk_class_name = %s", g_shell_config.junk_class_name.c_str());
                 DLOGD("risk_check_flags = 0x%x", g_shell_config.risk_check_flags);
-                DLOGD("disable_inmemory_dex = %d", g_shell_config.disable_inmemory_dex ? 1 : 0);
+                DLOGD("use_inmemory_dex = %d", g_shell_config.use_inmemory_dex ? 1 : 0);
             } catch (const std::exception &e) {
                 ELOG("parse shell config failed: %s", e.what());
             }
@@ -1021,17 +1022,19 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
 
     release_package(package_addr, package_size);
 
-    // Task 1.4: decide the dex loading mode once, before anything can call
-    // cbde/ia. In-memory needs the multidex location suffix that ART only
-    // gives buffer-array loaders from Android 10 on; on older releases every
-    // buffer would parse as dex 0 and the wrong payload would be restored.
-    // A parse failure above leaves the flag false, i.e. the safe on-disk path.
-    g_use_in_memory_dex = !g_shell_config.disable_inmemory_dex
+    // Decide the dex loading mode once, before anything can call cbde/ia.
+    // On-disk is the default; in-memory is opt-in (--use-inmemory-dex or the
+    // use_inmemory_dex config key). In-memory needs the multidex location
+    // suffix that ART only gives buffer-array loaders from Android 10 on; on
+    // older releases every buffer would parse as dex 0 and the wrong payload
+    // would be restored. A parse failure above leaves the flag false, i.e. the
+    // safe on-disk path.
+    g_use_in_memory_dex = g_shell_config.use_inmemory_dex
             && android_get_device_api_level() >= __ANDROID_API_Q__;
-    DLOGI("in-memory dex mode: %s (api=%d, disabled=%d)",
+    DLOGI("in-memory dex mode: %s (api=%d, requested=%d)",
           g_use_in_memory_dex ? "on" : "off",
           android_get_device_api_level(),
-          g_shell_config.disable_inmemory_dex ? 1 : 0);
+          g_shell_config.use_inmemory_dex ? 1 : 0);
 }
 
 

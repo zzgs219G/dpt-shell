@@ -69,7 +69,7 @@ public abstract class AndroidPackage {
         public String protectConfigFile = null;
         public boolean verifySign = false;
         public int riskCheckFlags = 0;
-        public boolean disableInmemoryDex = false;
+        public boolean useInmemoryDex = false;
 
         public Builder filePath(String path) {
             this.filePath = path;
@@ -111,8 +111,8 @@ public abstract class AndroidPackage {
             return this;
         }
 
-        public Builder disableInmemoryDex(boolean disableInmemoryDex) {
-            this.disableInmemoryDex = disableInmemoryDex;
+        public Builder useInmemoryDex(boolean useInmemoryDex) {
+            this.useInmemoryDex = useInmemoryDex;
             return this;
         }
 
@@ -163,7 +163,7 @@ public abstract class AndroidPackage {
     private String protectConfigFile;
     private boolean verifySign = false;
     private int riskCheckFlags = 0;
-    private boolean disableInmemoryDex = false;
+    private boolean useInmemoryDex = false;
 
     public AndroidPackage(Builder builder) {
         setFilePath(builder.filePath);
@@ -180,7 +180,7 @@ public abstract class AndroidPackage {
         setProtectConfigFile(builder.protectConfigFile);
         setVerifySign(builder.verifySign);
         setRiskCheckFlags(builder.riskCheckFlags);
-        setDisableInmemoryDex(builder.disableInmemoryDex);
+        setUseInmemoryDex(builder.useInmemoryDex);
     }
 
     public void setProtectConfigFile(String protectConfigFile) {
@@ -207,12 +207,12 @@ public abstract class AndroidPackage {
         this.riskCheckFlags = riskCheckFlags;
     }
 
-    public boolean isDisableInmemoryDex() {
-        return disableInmemoryDex;
+    public boolean isUseInmemoryDex() {
+        return useInmemoryDex;
     }
 
-    public void setDisableInmemoryDex(boolean disableInmemoryDex) {
-        this.disableInmemoryDex = disableInmemoryDex;
+    public void setUseInmemoryDex(boolean useInmemoryDex) {
+        this.useInmemoryDex = useInmemoryDex;
     }
 
     public boolean isSmaller() {
@@ -1138,10 +1138,10 @@ public abstract class AndroidPackage {
         ShellConfig shellConfig = ShellConfig.getInstance();
         // Merge CLI flags into config-file flags (each bit = one switch)
         shellConfig.setRiskCheckFlags(shellConfig.getRiskCheckFlags() | getRiskCheckFlags());
-        // The CLI can only force in-memory dex off, never on; the config file
-        // may already have disabled it.
-        if (isDisableInmemoryDex()) {
-            shellConfig.setDisableInmemoryDex(true);
+        // The CLI can only force in-memory dex on; the default is the on-disk
+        // path, so there is nothing for the CLI to turn off.
+        if (isUseInmemoryDex()) {
+            shellConfig.setUseInmemoryDex(true);
         }
 
         if (isVerifySign()) {
