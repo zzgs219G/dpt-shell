@@ -3,8 +3,8 @@
 本文件是 dpt-shell 项目中 AI 助手的**工作约定**。接手本项目前请先读完本文件，再动手改代码。
 
 改代码前先看流程地图（流程、跨端契约、红线、改哪里）：[docs/项目流程.md](docs/项目流程.md)。
-详细的构建与排障流程见 [docs/build-and-release.md](docs/build-and-release.md)；
-踩坑与故障记录见 [docs/pitfalls.md](docs/pitfalls.md)。
+详细的构建与排障流程见 [docs/构建与发布.md](docs/构建与发布.md)；
+踩坑与故障记录见 [docs/踩坑记录.md](docs/踩坑记录.md)。
 
 ---
 
@@ -64,7 +64,7 @@ cd dpt-shell && git submodule update --init --recursive
 # 只打 dpt.jar —— 产出 executable/dpt.jar，不含 shell-files
 ./gradlew :dpt:jar
 
-# 发布：见 docs/build-and-release.md
+# 发布：见 docs/构建与发布.md
 ```
 
 **关键区别**：`./gradlew assemble` **不足以**产出可用的 `executable/`。
@@ -160,15 +160,15 @@ executable/
   - nonce = `methodIdx` 的 12 字节 LE 编码（低 4 字节有效）
   - counter 从 0；v2 RC4 分支已随 Task 1.3 收尾**删除**（1.6 验收 grep 零命中）
   - 载荷版本 `MULTI_DEX_CODE_VERSION` 2 → 3（Task 1.1 后最终为 **4**）
-- **Task 1.6 集成验收已执行**（2026-10-07）：报告 `docs/phase1-test.md`、
-  终态设计 `docs/phase1-design.md`；✅7 / ❌3（打包 −24.7% 未达 −30%、
+- **Task 1.6 集成验收已执行**（2026-10-07）：报告与终态设计已归档
+  `docs/归档/phase1-性能优化方案.zip`；✅7 / ❌3（打包 −24.7% 未达 −30%、
   冷启动 +299ms、内存 +240MB 级）/ ⏳4+，遗留问题归 Phase 2
   - 同日补测**原作者 v2.21.0 汇报口径**（报告 §四）：打包快 23.0%、
     体积 +0.45%~0.89%（持平）、运行时冷启动慢 26.0%/内存重 17.8%（**两轴劣于上游**）；
     纯 v2.21.0 打 21-dex 即崩（`catch (Exception)` 漏 `AssertionError`），
     对照组用了 1 行补丁（披露见报告 §4.3）
 - 后续任务与设计见 `docs/进度与交接.md`（执行进度与交接，含 Task 1.4 实施记录与性能基准）
-  与 `docs/phase1-perf-plan.md`（性能优化方案，唯一执行依据）
+  （Phase 1 方案已归档 `docs/归档/phase1-性能优化方案.zip`）
 - v1.0.1~1.0.3 启动闪退的根因与修复见 `docs/启动闪退根因分析.md`
 - **内存路径 VerifyError（v1.0.5 触发 / v1.0.6 修复）已真机验证**（2026-10-06，Android 16）：
   根因是 ART 不暴露注册 buffer 地址导致 gate 白名单拒绝，修复见
