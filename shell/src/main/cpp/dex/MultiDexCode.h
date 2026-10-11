@@ -12,7 +12,7 @@
 #include "common/dpt_log.h"
 
 /**
- * OoooooOooo payload, v4 layout.
+ * xixin_data payload, v4 layout.
  *
  * The runtime reads this straight out of mapped memory, so every field is
  * little-endian and every accessor must stay within [0, size).

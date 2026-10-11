@@ -70,7 +70,7 @@ public class Const {
 
     public static final String ROOT_OF_OUT_DIR = System.getProperty("java.io.tmpdir");
 
-    // OoooooOooo payload version.
+    // xixin_data payload version.
     //   4 = instructions encrypted with ChaCha20, plus a per-class index so the
     //       runtime can find a class's methods by (dexIdx, classDataOff) instead
     //       of allocating a 65536-entry table per dex. Layout:
@@ -91,12 +91,13 @@ public class Const {
 
     public static final String RC4_KEY_SYMBOL = "DPT_UNKNOWN_DATA";
 
-    public static final String KEY_SHELL_CONFIG_STORE_NAME = "d_shell_data_001";
+    public static final String KEY_SHELL_CONFIG_STORE_NAME = "xixin_config";
     public static final String KEY_BUILD_KEY_FILE_NAME = "build-key";
-    public static final String KEY_DEXES_STORE_NAME = "i11111i111.zip";
-    public static final String KEY_DEXES_STORE_UNALIGNED_NAME = "i11111i111_unaligned.zip";
-    public static final String KEY_CODE_ITEM_STORE_NAME = "OoooooOooo";
-    public static final String KEY_LIBS_DIR_NAME = "vwwwwwvwww";
+    public static final String KEY_DEXES_STORE_NAME = "xixin_dexes.zip";
+    public static final String KEY_DEXES_STORE_UNALIGNED_NAME = "xixin_dexes_unaligned.zip";
+    public static final String KEY_CODE_ITEM_STORE_NAME = "xixin_data";
+    /** Assets dir holding the shell SO; pairs with Global.ZIP_LIB_DIR on the runtime side. */
+    public static final String KEY_LIBS_DIR_NAME = "xixin";
     public static final String KEY_JNI_BASE_CLASS_NAME = "JniBridge";
     public static final String DEFAULT_SHELL_PACKAGE_NAME = "com/luoyesiqiu/shell";
     /** Auto shell package placeholder; resolved to "{appPackage}.shell" after package name is known. */

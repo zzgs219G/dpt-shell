@@ -891,7 +891,7 @@ DPT_ENCRYPT void init_app(JNIEnv *env, jclass __unused) {
 DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
 
     if (data == nullptr || data_len < 16) {
-        ELOG("OoooooOooo invalid: data=%p len=%zu", data, data_len);
+        ELOG("xixin_data invalid: data=%p len=%zu", data, data_len);
         return;
     }
 
@@ -902,10 +902,10 @@ DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
     dexCode->init(data, data_len);
 
     if (!dexCode->isValid()) {
-        ELOG("OoooooOooo rejected by init; insns will not be restored");
+        ELOG("xixin_data rejected by init; insns will not be restored");
         return;
     }
-    DLOGI("OoooooOooo v4 ready: version = %d, dexCount = %d, classes = %u",
+    DLOGI("xixin_data v4 ready: version = %d, dexCount = %d, classes = %u",
           dexCode->getVersion(), dexCode->getDexCount(), dexCode->getClassCount());
 }
 

@@ -9,26 +9,27 @@ static def generateHexString() {
     return Long.toHexString(secureRandom.nextLong())
 }
 
-// Persist soName/dptBuildKey across Gradle invocations so dpt.jar and shell SO stay in sync.
-// Stored under the root build/ directory; clean deletes it so the next build regenerates.
+// The shell SO name is fixed to "xixin" so the packaged library reads as a
+// brand-natural "libxixin.so" instead of gibberish. dpt.jar globs *.so under
+// shell-files/libs/<abi>/, so nothing on the packing side depends on a random name.
+// dptBuildKey is still random per build and persisted across Gradle invocations
+// (dpt.jar ↔ shell-files pairing). Stored under the root build/ directory;
+// clean deletes it so the next build regenerates.
 def dptBuildIdsFile = file("${rootDir}/build/dpt-build-ids.properties")
 def dptBuildIds = new Properties()
 if (dptBuildIdsFile.exists()) {
     dptBuildIdsFile.withInputStream { dptBuildIds.load(it) }
 }
-def resolvedSoName = dptBuildIds.getProperty("soName")
 def resolvedBuildKey = dptBuildIds.getProperty("dptBuildKey")
-if (!resolvedSoName || resolvedSoName.isEmpty() || !resolvedBuildKey || resolvedBuildKey.isEmpty()) {
-    resolvedSoName = generateHexString()
+if (!resolvedBuildKey || resolvedBuildKey.isEmpty()) {
     resolvedBuildKey = generateHexString()
-    dptBuildIds.setProperty("soName", resolvedSoName)
     dptBuildIds.setProperty("dptBuildKey", resolvedBuildKey)
     dptBuildIdsFile.parentFile.mkdirs()
     dptBuildIdsFile.withOutputStream { dptBuildIds.store(it, "dpt-shell build ids. Delete to regenerate.") }
 }
 
 ext {
-    soName = resolvedSoName
+    soName = "xixin"
     fullSoName = "lib${soName}.so"
     shellPackageName = generateHexString()
     dptBuildKey = resolvedBuildKey
@@ -40,7 +41,7 @@ ext {
 
     // App version
     appVersionCode = 1
-    appVersionName = "1.0.0"
+    appVersionName = "1.2.0"
 
     // Java compatibility
     shellJavaVersion = JavaVersion.VERSION_1_8

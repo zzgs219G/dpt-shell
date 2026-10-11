@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Builds and writes the OoooooOooo payload.
+ * Builds and writes the xixin_data payload.
  *
  * <p>Task 1.1 moved the format from v3 (a per-dex offset table plus a flat run
  * of code items) to v4 (header + per-class index + variable-length method
@@ -27,7 +27,7 @@ import java.util.Map;
 public class MultiDexCodeUtils {
 
     /**
-     * Write buffer for OoooooOooo. Large enough that a typical payload is written
+     * Write buffer for xixin_data. Large enough that a typical payload is written
      * with a handful of flushes; small enough to stay off the large-object heap.
      */
     private static final int WRITE_BUFFER_SIZE = 64 * 1024;

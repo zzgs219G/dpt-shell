@@ -66,7 +66,7 @@ public class CryptoUtils {
     }
 
     // ---------------------------------------------------------------------
-    // ChaCha20 (RFC 8439), used for OoooooOooo v3 payloads.
+    // ChaCha20 (RFC 8439), used for xixin_data v3 payloads.
     //
     // Implemented here rather than pulled from BouncyCastle because dpt.jar
     // ships without that dependency. The native side decrypts with mbedtls

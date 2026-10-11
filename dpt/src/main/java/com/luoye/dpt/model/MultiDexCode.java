@@ -3,7 +3,7 @@ package com.luoye.dpt.model;
 import java.util.List;
 
 /**
- * OoooooOooo payload, v4 layout.
+ * xixin_data payload, v4 layout.
  *
  * <pre>
  * Header (16 bytes)

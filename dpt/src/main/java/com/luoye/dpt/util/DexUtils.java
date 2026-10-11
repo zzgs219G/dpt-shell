@@ -452,7 +452,7 @@ public class DexUtils {
         // 改为一次性 readFully + 一次性 write。
         //
         // 注意 original 与 filler 是两份不同的数据，不能复用同一个 buffer：
-        //   original = dex 里的原指令，稍后要被加密进 OoooooOooo
+        //   original = dex 里的原指令，稍后要被加密进 xixin_data
         //   filler   = 写回 dex 的填充字节，用来把方法体抽空
         final int insnsByteLength = insnsCapacity * 2;
 
@@ -483,7 +483,7 @@ public class DexUtils {
         outRandomAccessFile.write(filler);
 
         byte[] aesKey = ShellConfig.getInstance().getInsnsCryptKey();
-        // ChaCha20 since OoooooOooo v3. The nonce is derived from methodIdx,
+        // ChaCha20 since xixin_data v3. The nonce is derived from methodIdx,
         // matching build_chacha20_nonce() on the runtime side.
         byte[] chacha20Nonce = CryptoUtils.buildChaCha20Nonce(method.getMethodIndex());
         byte[] encrypted = CryptoUtils.chacha20Crypt(aesKey, chacha20Nonce, original);

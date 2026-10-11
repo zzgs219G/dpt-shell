@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets;
 public class InsnsCryptoContractTest {
 
     /**
-     * Header version written into OoooooOooo must be 4, because only v4 is
+     * Header version written into xixin_data must be 4, because only v4 is
      * accepted by MultiDexCode::init. If this ever drifts, every packed APK
      * silently decrypts to garbage.
      */

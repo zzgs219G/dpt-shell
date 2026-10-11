@@ -4,7 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * One entry of the v4 OoooooOooo class index: where a class's methods live
+ * One entry of the v4 xixin_data class index: where a class's methods live
  * inside the MethodData block.
  */
 public class ClassIndexEntry {

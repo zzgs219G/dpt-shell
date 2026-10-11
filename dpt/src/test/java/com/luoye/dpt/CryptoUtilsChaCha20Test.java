@@ -6,7 +6,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 /**
- * ChaCha20 tests for OoooooOooo v3 payloads.
+ * ChaCha20 tests for xixin_data v3 payloads.
  *
  * The native runtime decrypts with mbedtls_chacha20_crypt, so the vectors below
  * come from RFC 8439 section 2.4.2. If this test passes, the Java build side and

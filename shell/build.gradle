@@ -158,7 +158,7 @@ def afterNativeBuildCopy(Project project, Map archMap, boolean debug) {
             + "src" + File.separator
             + "main" + File.separator
             + "assets" + File.separator
-            + "vwwwwwvwww")
+            + "xixin")
 
     println("[" + project.name + "] " + sourceDir.absolutePath + " -> " + targetDir.absolutePath)
 

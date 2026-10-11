@@ -391,7 +391,7 @@ static void collectTouchedPages(std::set<uintptr_t> &touchedPages,
 // with unrelated allocations, and those buffers are writable already. Flipping
 // them back to PROT_READ would take the neighbouring allocations down with them
 // and fault the next writer, so they only get the locks and the i-cache flush.
-// The file-path dex is a private mapping from code_cache/i11111i111.zip, which
+// The file-path dex is a private mapping from code_cache/xixin_dexes.zip, which
 // is where the permission flip belongs.
 static bool is_file_dex_location(const std::string &location) {
     return location.rfind(DEXES_ZIP_NAME) != std::string::npos;

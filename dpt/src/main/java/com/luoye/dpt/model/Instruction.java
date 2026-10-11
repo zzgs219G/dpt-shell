@@ -34,7 +34,7 @@ public class Instruction {
     /**
      * Offset of this method's owning class's class_data_item within its dex.
      *
-     * Required by the v4 OoooooOooo layout: the runtime looks a class up by
+     * Required by the v4 xixin_data layout: the runtime looks a class up by
      * (dexIdx, classDataOff) instead of probing a per-dex table, so every
      * instruction has to carry its class's offset.
      *

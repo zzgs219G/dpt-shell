@@ -82,7 +82,7 @@ tools/benchmark/bench-runtime.sh com.example.app com.example.app/.MainActivity
 
 采集四项：
 
-1. **code_cache** —— 首次安装后是否有 `i11111i111.zip`（判断走落盘还是内存加载）
+1. **code_cache** —— 首次安装后是否有 `xixin_dexes.zip`（判断走落盘还是内存加载）
 2. **冷启动** —— 每次 `am force-stop` 后再启动，取 `TotalTime` 中位数
 3. **热启动** —— 不 force-stop
 4. **内存** —— `dumpsys meminfo` 的 TOTAL PSS

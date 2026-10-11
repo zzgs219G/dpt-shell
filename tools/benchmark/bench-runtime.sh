@@ -37,7 +37,7 @@ echo "包名     : $PKG"
 echo
 echo "== code_cache =="
 if adb shell run-as "$PKG" ls -l code_cache/ 2>/dev/null; then
-    echo "（i11111i111.zip 存在 = 当前走落盘路径）"
+    echo "（xixin_dexes.zip 存在 = 当前走落盘路径）"
 else
     echo "code_cache 为空或不可读（API>=29 走 InMemoryDex 时属正常）"
 fi

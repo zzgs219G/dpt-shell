@@ -19,7 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Locks the v4 OoooooOooo layout.
+ * Locks the v4 xixin_data layout.
  *
  * <p>v4 is a breaking change: the runtime rejects anything but v4, and this is
  * the only place the layout is defined. These assertions exist because a wrong

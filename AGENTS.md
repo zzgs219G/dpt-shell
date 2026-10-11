@@ -11,7 +11,7 @@
 ## 1. 项目是什么
 
 dpt 是 Android 壳工程：`dpt.jar` 是**命令行打包工具**（纯 Java，无 Android 依赖），
-`shell` 是 **Android library**，产出 `libdpt.so` 和 `classes.dex`。
+`shell` 是 **Android library**，产出 `libxixin.so` 和 `classes.dex`。
 
 典型用法：
 
@@ -68,7 +68,7 @@ cd dpt-shell && git submodule update --init --recursive
 ```
 
 **关键区别**：`./gradlew assemble` **不足以**产出可用的 `executable/`。
-`executable/shell-files/`（含各 ABI 的 `libdpt.so`）由 `:shell` 的
+`executable/shell-files/`（含各 ABI 的 `libxixin.so`）由 `:shell` 的
 `afterAssembleCopy` 生成，挂在 **build 任务**的 `doLast` 上，需要 `./gradlew build`。
 仓库 README（中英文）第 19-27 行已同步为 `./gradlew build`（`088079e` 修正）；
 若你的本地副本仍写着 `./gradlew assemble`，那是**过时的**，以本文件为准。
@@ -82,7 +82,7 @@ executable/
 ├── dpt-protect-config-template.json
 └── shell-files/               ← :shell 的 build 任务，缺失则 dpt.jar 无法工作
     ├── dex/classes.dex
-    ├── libs/<abi>/libdpt.so  ← arm64-v8a / armeabi-v7a / x86 / x86_64
+    ├── libs/<abi>/libxixin.so  ← arm64-v8a / armeabi-v7a / x86 / x86_64
     └── build-key
 ```
 
