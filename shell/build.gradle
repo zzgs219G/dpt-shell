@@ -66,6 +66,11 @@ android {
         sourceCompatibility rootProject.ext.shellJavaVersion
         targetCompatibility rootProject.ext.shellJavaVersion
     }
+    testOptions {
+        // BackgroundDexopt 的单测会触到 android.util.Log（JVM 里默认抛 not mocked），
+        // 这里允许返回默认值，让纯逻辑（marker/命令拼装/兜底路径）可在 JVM 单测。
+        unitTests.returnDefaultValues = true
+    }
 }
 
 def afterAssembleCopy(Project project, Map archMap, boolean debug) {
