@@ -144,12 +144,17 @@ public final class BackgroundDexopt {
         InputStream out = p.getInputStream();
         byte[] buf = new byte[4096];
         while (out.read(buf) != -1) { /* 丢弃 */ }
-        boolean done = p.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!done) {
-            p.destroy();
-            return -1;
+        // Process.waitFor(long,TimeUnit) 需 API 26（minSdk 21）——用轮询等价实现
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                return p.exitValue();
+            } catch (IllegalThreadStateException stillRunning) {
+                Thread.sleep(200);
+            }
         }
-        return p.exitValue();
+        p.destroy();
+        return -1;
     }
 
     static String sha1Hex(File f) throws Exception {
