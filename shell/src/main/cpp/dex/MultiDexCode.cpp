@@ -352,3 +352,5 @@ bool dpt::data::MultiDexCode::restoreInsns(const uint8_t *key,
     }
     return m_restore_insns(key, methodIdx, in, inlen, out);
 }
+
+} // namespace dpt::data
