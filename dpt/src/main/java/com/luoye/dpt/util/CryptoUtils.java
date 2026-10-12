@@ -1,11 +1,15 @@
 package com.luoye.dpt.util;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.NoSuchAlgorithmException;
+import java.util.zip.DataFormatException;
+import java.util.zip.Deflater;
+import java.util.zip.Inflater;
 
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -150,6 +154,79 @@ public class CryptoUtils {
         byte[] nonce = new byte[CHACHA20_NONCE_SIZE];
         writeUint32Le(nonce, 0, methodIdx);
         return nonce;
+    }
+
+    /**
+     * Raw DEFLATE (nowrap: no zlib header, no adler32) of {@code in}.
+     *
+     * The native side inflates with zlib windowBits = -15, which expects exactly
+     * this stream format — the pair is locked by MultiDexCodeV5Test.
+     *
+     * @param in input bytes, must not be empty
+     * @return the deflated bytes (possibly larger than the input for
+     * incompressible data — callers decide whether to keep it)
+     */
+    public static byte[] deflateRaw(byte[] in) {
+        if (in == null || in.length == 0) {
+            throw new IllegalArgumentException("deflate input is empty");
+        }
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
+        try {
+            deflater.setInput(in);
+            deflater.finish();
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, in.length / 2));
+            byte[] buf = new byte[8192];
+            while (!deflater.finished()) {
+                int n = deflater.deflate(buf);
+                if (n == 0) {
+                    // Should not happen with finish() set and room in buf; guard
+                    // against spinning forever on a broken deflater anyway.
+                    throw new IllegalStateException("deflater made no progress");
+                }
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } finally {
+            deflater.end();
+        }
+    }
+
+    /**
+     * Inverse of {@link #deflateRaw(byte[])}: raw-inflate {@code in} and assert
+     * the result is exactly {@code expectedLen} bytes, mirroring the runtime's
+     * zlib inflateInit2(-15) + exact-length check.
+     *
+     * @return the inflated bytes, or null when the stream is corrupt or the
+     * length does not match
+     */
+    public static byte[] inflateRaw(byte[] in, int expectedLen) {
+        if (in == null || in.length == 0 || expectedLen <= 0) {
+            return null;
+        }
+        Inflater inflater = new Inflater(true);
+        try {
+            inflater.setInput(in);
+            byte[] out = new byte[expectedLen];
+            int total = 0;
+            while (!inflater.finished()) {
+                int n = inflater.inflate(out, total, out.length - total);
+                total += n;
+                if (n == 0) {
+                    if (inflater.needsInput() || inflater.needsDictionary()
+                            || total != expectedLen) {
+                        return null;
+                    }
+                }
+            }
+            if (total != expectedLen) {
+                return null;
+            }
+            return out;
+        } catch (DataFormatException e) {
+            return null;
+        } finally {
+            inflater.end();
+        }
     }
 
     /**

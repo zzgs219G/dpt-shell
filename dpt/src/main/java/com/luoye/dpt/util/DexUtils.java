@@ -482,15 +482,11 @@ public class DexUtils {
         outRandomAccessFile.seek(insnsOffset);
         outRandomAccessFile.write(filler);
 
-        byte[] aesKey = ShellConfig.getInstance().getInsnsCryptKey();
-        // ChaCha20 since xixin_data v3. The nonce is derived from methodIdx,
-        // matching build_chacha20_nonce() on the runtime side.
-        byte[] chacha20Nonce = CryptoUtils.buildChaCha20Nonce(method.getMethodIndex());
-        byte[] encrypted = CryptoUtils.chacha20Crypt(aesKey, chacha20Nonce, original);
-        if (encrypted == null || encrypted.length != original.length) {
-            throw new IllegalStateException("chacha20 encrypt insns failed");
-        }
-        instruction.setInstructionsData(encrypted);
+        // v5: instructions stay PLAINTEXT here. Encryption moved to
+        // MultiDexCodeUtils, which ChaCha20-encrypts whole compressed blocks
+        // (nonce = block index). v4 encrypted per method at this point, which
+        // made the payload ciphertext and therefore incompressible.
+        instruction.setInstructionsData(original);
 
         return instruction;
     }

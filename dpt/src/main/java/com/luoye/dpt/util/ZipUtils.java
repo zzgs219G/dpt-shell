@@ -38,10 +38,6 @@ public class ZipUtils {
             "assets/" + Const.KEY_CODE_ITEM_STORE_NAME
     );
 
-    private static final List<String> biggerFileList = Arrays.asList(
-            "assets/" + Const.KEY_CODE_ITEM_STORE_NAME
-    );
-
     private static final String META_INF_NAME = "META-INF";
 
     /**
@@ -351,9 +347,11 @@ public class ZipUtils {
      * @param zipPath zip apk path
      */
     public static void zip(String dirPath, String zipPath, boolean smaller) {
-        if(smaller) {
-            doNotCompress.removeAll(biggerFileList);
-        }
+        // -S now only controls the extraction filler strategy (see
+        // DexUtils.extractMethod). The payload used to be DEFLATE'd here when
+        // smaller=true, but it is ChaCha20 ciphertext — incompressible, so the
+        // measured gain was ~2% while the runtime paid a full inflate at init.
+        // It stays STORE'd in every mode.
         ZipOutputStream zos = null;
         try {
             File zip = new File(zipPath);

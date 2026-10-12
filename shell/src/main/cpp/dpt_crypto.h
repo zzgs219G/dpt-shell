@@ -30,12 +30,16 @@ std::vector<uint8_t> aes_cbc_decrypt(const uint8_t *key,
                                      size_t inlen);
 
 /**
- * Build the 12-byte ChaCha20 nonce for a method.
+ * Build the 12-byte ChaCha20 nonce for a 32-bit seed.
  *
- * methodIdx is encoded little-endian into the low 4 bytes and the remaining
- * 8 bytes stay zero. Distinct method indices therefore always produce distinct
- * nonces (no collision below 2^32 methods), while the same method always uses
+ * The seed is encoded little-endian into the low 4 bytes and the remaining
+ * 8 bytes stay zero. Distinct seeds therefore always produce distinct
+ * nonces (no collision below 2^32), while the same seed always uses
  * the same key+nonce pair - required for symmetric encryption.
+ *
+ * v4 used the method index as the seed (per-method records). v5 uses the
+ * BLOCK index (the whole compressed block is one encrypted unit), so the
+ * same builder serves both sides' block path.
  *
  * NOTE: the layout must stay identical to CryptoUtils.buildChaCha20Nonce() on
  * the build side, otherwise decryption yields garbage.
@@ -46,9 +50,13 @@ void build_chacha20_nonce(uint32_t methodIdx, uint8_t *nonce);
  * Decrypt a code item's instructions in place (ChaCha20 is a stream cipher,
  * so the same call both encrypts and decrypts).
  *
+ * v5: called with a BLOCK index as the seed to decrypt one whole compressed
+ * block at materialization time; also reused by the bound per-payload restore
+ * routine if a payload version ever needs per-method decryption again.
+ *
  * @param key       32-byte insns crypt key (ShellConfig::aes_key)
- * @param methodIdx method index used to derive the nonce
- * @param in        encrypted instructions
+ * @param methodIdx seed for the nonce (v5: block index)
+ * @param in        encrypted input
  * @param inlen     number of bytes
  * @param out       output buffer, may alias in
  * @return true on success

@@ -905,7 +905,7 @@ DPT_ENCRYPT void readCodeItem(uint8_t *data,size_t data_len) {
         ELOG("xixin_data rejected by init; insns will not be restored");
         return;
     }
-    DLOGI("xixin_data v4 ready: version = %d, dexCount = %d, classes = %u",
+    DLOGI("xixin_data v5 ready: version = %d, dexCount = %d, classes = %u",
           dexCode->getVersion(), dexCode->getDexCount(), dexCode->getClassCount());
 }
 

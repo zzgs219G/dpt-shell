@@ -421,11 +421,12 @@ void patchMethodInsns(uint8_t *begin,
          methodIdx, insnsSize, realInsnsPtr,
          (unsigned int)(realInsnsPtr - begin));
 
-    // The decryption routine is bound once per payload in MultiDexCode::init,
-    // so this hot path does not branch on the payload version.
+    // The restore routine is bound once per payload in MultiDexCode::init, so
+    // this hot path does not branch on the payload version. (v5: records are
+    // plaintext inside materialized blocks — the restore is a plain copy.)
     auto *dexCode = data::MultiDexCode::getInst();
-    if (UNLIKELY(!dexCode->cryptInsns(g_shell_config.aes_key, methodIdx,
-                                      enc, insnsSize, realInsnsPtr))) {
+    if (UNLIKELY(!dexCode->restoreInsns(g_shell_config.aes_key, methodIdx,
+                                        enc, insnsSize, realInsnsPtr))) {
         ELOG("decrypt insns failed, methodIndex = %d, size = %d",
               methodIdx, insnsSize);
     }
@@ -515,10 +516,10 @@ void collectOneClassMethod(uint8_t *begin,
     }
 
     auto *dexCode = data::MultiDexCode::getInst();
-    auto view = dexCode->getMethodData(entry, *cursor);
+    auto view = dexCode->getMethodData(entry, *cursor, g_shell_config.aes_key);
     (*cursor)++;
 
-    if (view.encryptedInsns == nullptr) {
+    if (view.insns == nullptr) {
         // Zero-length placeholder: the packing side deliberately left this method
         // unprotected. Nothing to restore.
         return;
@@ -543,7 +544,7 @@ void collectOneClassMethod(uint8_t *begin,
     PendingPatch patch{};
     patch.methodIdx = view.methodIdx;
     patch.codeOff = method.code_off_;
-    patch.enc = view.encryptedInsns;
+    patch.enc = view.insns;
     patch.insnsSize = view.insnsSize;
     patches.push_back(patch);
 

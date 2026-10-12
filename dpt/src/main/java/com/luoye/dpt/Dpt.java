@@ -112,7 +112,7 @@ public class Dpt {
         options.addOption(new Option(Const.OPTION_OUTPUT_PATH, Const.OPTION_OUTPUT_PATH_LONG, true, "Output directory for protected package."));
         options.addOption(new Option(Const.OPTION_DO_NOT_PROTECT_CLASSES_RULES, Const.OPTION_DO_NOT_PROTECT_CLASSES_RULES_LONG, true, "Rules file for class names that will not be protected.\n"));
         options.addOption(new Option(Const.OPTION_KEEP_CLASSES, Const.OPTION_KEEP_CLASSES_LONG, false, "Keeping some classes in the package can improve the app's startup speed to a certain extent, but it is not supported by some application packages.\n"));
-        options.addOption(new Option(Const.OPTION_SMALLER, Const.OPTION_SMALLER_LONG, false, "Trade some of the app's performance for a smaller app size.\n"));
+        options.addOption(new Option(Const.OPTION_SMALLER, Const.OPTION_SMALLER_LONG, false, "Write a uniform 0x000e (return-void) filler into extracted method bodies so the packed dex recompresses well (smaller APK). Weaker filler obfuscation than the default random filler.\n"));
         options.addOption(new Option(Const.OPTION_PROTECT_CONFIG, Const.OPTION_PROTECT_CONFIG_LONG, true, "Protect config file.\n"));
         options.addOption(new Option(Const.OPTION_EXCLUDE_ABI, Const.OPTION_EXCLUDE_ABI_LONG, true, "Exclude specific ABIs (comma separated, e.g. x86,x86_64). \n"
                 + "Supported ABIs:\n"

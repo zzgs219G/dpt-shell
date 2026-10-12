@@ -71,23 +71,35 @@ public class Const {
     public static final String ROOT_OF_OUT_DIR = System.getProperty("java.io.tmpdir");
 
     // xixin_data payload version.
-    //   4 = instructions encrypted with ChaCha20, plus a per-class index so the
-    //       runtime can find a class's methods by (dexIdx, classDataOff) instead
-    //       of allocating a 65536-entry table per dex. Layout:
-    //       see docs/phase1-perf-plan.md, Task 1.1.
-    // The runtime rejects anything but v4, so this constant and
-    // DPT_MULTI_DEX_CODE_VERSION_V4 in
-    // shell/src/main/cpp/dex/MultiDexCode.h must be changed together.
-    public static final short MULTI_DEX_CODE_VERSION_V4 = 4;
-    public static final short MULTI_DEX_CODE_VERSION = MULTI_DEX_CODE_VERSION_V4;
+    //   5 = block-compressed MethodData. Per-class records (format unchanged
+    //       from v4: u32 methodIdx + u16 insnsSize + insns) are grouped into
+    //       class-aligned ~64KB blocks, raw-DEFLATEd, then ChaCha20-encrypted
+    //       per block with nonce = block index. Records hold PLAINTEXT insns:
+    //       encryption moved from per-method (v4) to per-block, because
+    //       deflating ciphertext would be pointless. See MultiDexCodeUtils and
+    //       MultiDexCodeV5Test.
+    //   (4 = flat per-method records, per-method nonce = methodIdx. Retired:
+    //    the runtime only accepts v5. Old packed APKs keep running with their
+    //    own embedded so, so no compatibility path is needed.)
+    // The runtime rejects anything but v5, so this constant and
+    // DPT_MULTI_DEX_CODE_VERSION in shell/src/main/cpp/dex/MultiDexCode.h
+    // must be changed together.
+    public static final short MULTI_DEX_CODE_VERSION_V5 = 5;
+    public static final short MULTI_DEX_CODE_VERSION = MULTI_DEX_CODE_VERSION_V5;
 
-    // 'OOO4' as a little-endian uint32. The runtime compares this before
+    // 'OOO5' as a little-endian uint32. The runtime compares this before
     // trusting any offset in the payload.
-    public static final int MULTI_DEX_CODE_MAGIC = 0x4F4F4F34;
+    public static final int MULTI_DEX_CODE_MAGIC = 0x4F4F4F35;
 
-    // Byte sizes fixed by the v4 layout.
-    public static final int MULTI_DEX_CODE_HEADER_SIZE = 16;
+    // Byte sizes fixed by the v5 layout.
+    public static final int MULTI_DEX_CODE_HEADER_SIZE = 24;
     public static final int MULTI_DEX_CODE_CLASS_INDEX_ENTRY_SIZE = 16;
+    public static final int MULTI_DEX_CODE_BLOCK_ENTRY_SIZE = 16;
+    // Target uncompressed size of one method-record block. Blocks are
+    // class-aligned; a single class larger than this gets a dedicated block.
+    public static final int MULTI_DEX_CODE_BLOCK_TARGET_SIZE = 64 * 1024;
+    // Runtime-side sanity bound when materializing a block from mapped memory.
+    public static final int MULTI_DEX_CODE_BLOCK_MAX_RAW_SIZE = 16 * 1024 * 1024;
 
     public static final String RC4_KEY_SYMBOL = "DPT_UNKNOWN_DATA";
 

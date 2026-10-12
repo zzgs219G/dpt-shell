@@ -44,7 +44,7 @@ java -jar dpt.jar -f /path/to/android-package-file
 | `-c, --protect-config <文件>` | 指定保护配置 JSON，可自定义壳类包名（`shellPkgName`）、签名 keystore（`signature`）等，模板见 `executable/dpt-protect-config-template.json` |
 | `-r, --rules-file <文件>` | 不参与保护的类名规则文件：每行一条正则，匹配完整类名（形如 `Lcom/example/Foo;`）。注意：会**整体替换**内置默认规则，模板见 `executable/dpt-exclude-classes-template.rules` |
 | `-K, --keep-classes` | 把部分类保留在包内不抽取代码，可一定程度提升启动速度，但并非所有应用都适用 |
-| `-S, --smaller` | 用部分运行时性能换取更小的包体积 |
+| `-S, --smaller` | 被抽走指令的方法体写入统一的 `0x000e`（return-void）占位，使加壳后的 dex 重新可压缩、包体更小；代价是占位特征可被识别（默认用随机占位） |
 | `-e, --exclude-abi <ABI 列表>` | 打包时排除指定 ABI 的 so，逗号分隔。可选值：`arm`、`arm64`、`x86`、`x86_64`（分别对应 armeabi-v7a、arm64-v8a、x86、x86_64），如 `-e x86,x86_64` |
 
 **运行时行为**（写入壳配置，在被保护应用运行时生效）
@@ -104,8 +104,10 @@ usage: java -jar dpt.jar [option] -f <package_file>
  -o,--output <arg>           Output directory for protected package.
  -r,--rules-file <arg>       Rules file for class names that will not be
                              protected.
- -S,--smaller                Trade some of the app's performance for a
-                             smaller app size.
+ -S,--smaller                Write a uniform 0x000e (return-void) filler into
+                             extracted method bodies so the packed dex
+                             recompresses well (smaller APK). Weaker filler
+                             obfuscation than the default random filler.
  -v,--version                Show program's version number.
  -vs,--verify-sign           Enable runtime app signature verification.
                              The certificate SHA-256 is computed

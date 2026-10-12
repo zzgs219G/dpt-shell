@@ -106,6 +106,7 @@ target_link_options(${SO_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
 
 target_link_libraries(${SO_NAME}
             ${log-lib}
+            z
             MINIZIP::minizip
             dobby
             bytehook

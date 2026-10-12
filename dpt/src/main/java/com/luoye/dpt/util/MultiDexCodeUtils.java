@@ -1,11 +1,14 @@
 package com.luoye.dpt.util;
 
 import com.luoye.dpt.config.Const;
+import com.luoye.dpt.config.ShellConfig;
+import com.luoye.dpt.model.BlockTableEntry;
 import com.luoye.dpt.model.ClassIndexEntry;
 import com.luoye.dpt.model.Instruction;
 import com.luoye.dpt.model.MultiDexCode;
 
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -21,8 +24,11 @@ import java.util.Map;
  *
  * <p>Task 1.1 moved the format from v3 (a per-dex offset table plus a flat run
  * of code items) to v4 (header + per-class index + variable-length method
- * records). The runtime's {@code MultiDexCode::findClassIndex} binary-searches
- * the index, so the entries must be sorted by {@code (dexIdx, classDataOff)}.
+ * records). v5 keeps the v4 class index and record format but stores the
+ * records in class-aligned compressed blocks: raw-DEFLATE first, then ChaCha20
+ * per block (nonce = block index). The runtime's
+ * {@code MultiDexCode::findClassIndex} binary-searches the index unchanged,
+ * then materializes the one block holding the requested class.
  */
 public class MultiDexCodeUtils {
 
@@ -46,9 +52,9 @@ public class MultiDexCodeUtils {
                        .thenComparingLong(e -> Integer.toUnsignedLong(e.classDataOff));
 
     /**
-     * Build a v4 payload from the extracted instructions, keyed by dex index.
+     * Build a v5 payload from the extracted instructions, keyed by dex index.
      *
-     * @param multiDexInsns dex index -&gt; that dex's protected methods, in
+     * @param multiDexInsns dex index -> that dex's protected methods, in
      *                      {@code ClassData.allMethods()} order
      */
     public static MultiDexCode makeMultiDexCode(Map<Integer, List<Instruction>> multiDexInsns) {
@@ -60,7 +66,7 @@ public class MultiDexCodeUtils {
         // Group every instruction under its (dexIdx, classDataOff) pair, preserving
         // the incoming method order inside each group.
         List<ClassIndexEntry> classIndex = new ArrayList<>();
-        List<List<byte[]>> blocksPerClass = new ArrayList<>();
+        List<List<byte[]>> recordsPerClass = new ArrayList<>();
 
         multiDexInsns.entrySet().stream()
                 .filter(e -> e.getValue() != null && !e.getValue().isEmpty())
@@ -81,44 +87,164 @@ public class MultiDexCodeUtils {
                         for (Instruction ins : byClass) {
                             block.add(encodeMethodData(ins));
                         }
-                        blocksPerClass.add(block);
+                        recordsPerClass.add(block);
                     }
                 });
 
         // The runtime binary-searches ClassIndex, so entries must be sorted by
         // (dexIdx, classDataOff). Sorting the index alone would desynchronise every
-        // methodDataOff, so the per-class blocks are permuted alongside it.
-        List<Integer> order = new ArrayList<>(classIndex.size());
-        for (int i = 0; i < classIndex.size(); i++) {
+        // methodDataOff, so the per-class records are permuted alongside it.
+        List<ClassIndexEntry> sortedIndex = new ArrayList<>(classIndex.size());
+        List<List<byte[]>> sortedRecordsPerClass = new ArrayList<>();
+        for (int i : order(classIndex.size(), classIndex, recordsPerClass)) {
+            sortedIndex.add(classIndex.get(i));
+            sortedRecordsPerClass.add(recordsPerClass.get(i));
+        }
+
+        // Assign relative offsets now that the record order is fixed. These are
+        // offsets in the *virtual raw* method-data space: records laid out
+        // contiguously in sortedIndex order, exactly as v4 stored them. v5
+        // keeps the virtual addresses and stores the bytes compressed+encrypted
+        // in blocks.
+        int offset = 0;
+        int recordIndex = 0;
+        for (ClassIndexEntry cie : sortedIndex) {
+            cie.methodDataOff = offset;
+            for (byte[] rec : sortedRecordsPerClass.get(recordIndex++)) {
+                offset += rec.length;
+            }
+        }
+
+        // Partition the classes into class-aligned blocks, then compress and
+        // encrypt each block. A class's records never straddle a block boundary,
+        // so one materialized block covers a whole patchClass walk on the
+        // runtime side.
+        byte[] aesKey = ShellConfig.getInstance().getInsnsCryptKey();
+        List<byte[]> compBlocks = new ArrayList<>();
+        List<BlockTableEntry> blockTable = new ArrayList<>();
+        partitionAndCompress(sortedIndex, sortedRecordsPerClass, aesKey,
+                blockTable, compBlocks);
+
+        // Assign absolute ciphertext offsets: Blocks[] starts right after the
+        // block table. appendBlock left compOffset = 0 because blockCount (and
+        // therefore blocksStart) was not known until the partition finished.
+        int blocksStart = Const.MULTI_DEX_CODE_HEADER_SIZE
+                + sortedIndex.size() * Const.MULTI_DEX_CODE_CLASS_INDEX_ENTRY_SIZE
+                + blockTable.size() * Const.MULTI_DEX_CODE_BLOCK_ENTRY_SIZE;
+        int compCursor = blocksStart;
+        for (BlockTableEntry e : blockTable) {
+            e.compOffset = compCursor;
+            compCursor += e.compSize;
+        }
+
+        multiDexCode.setBlockTableOffset(Const.MULTI_DEX_CODE_HEADER_SIZE
+                + sortedIndex.size() * Const.MULTI_DEX_CODE_CLASS_INDEX_ENTRY_SIZE);
+        multiDexCode.setBlockCount(blockTable.size());
+        multiDexCode.setClassIndex(sortedIndex);
+        multiDexCode.setBlockTable(blockTable);
+        multiDexCode.setBlocks(compBlocks);
+        return multiDexCode;
+    }
+
+    /**
+     * Permutation [0..n) sorting by (dexIdx, classDataOff).
+     */
+    private static List<Integer> order(int n,
+                                       List<ClassIndexEntry> classIndex,
+                                       List<List<byte[]>> recordsPerClass) {
+        List<Integer> order = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
             order.add(i);
         }
         order.sort(Comparator
                 .comparing((Integer i) -> classIndex.get(i), CLASS_INDEX_ORDER)
                 .thenComparingInt(i -> i));
+        return order;
+    }
 
-        List<ClassIndexEntry> sortedIndex = new ArrayList<>(classIndex.size());
-        List<byte[]> sortedMethodData = new ArrayList<>();
-        for (int i : order) {
-            sortedIndex.add(classIndex.get(i));
-            sortedMethodData.addAll(blocksPerClass.get(i));
+    /**
+     * Walk the sorted classes, accumulating plaintext records into blocks of
+     * ~{@link Const#MULTI_DEX_CODE_BLOCK_TARGET_SIZE} raw bytes, and append one
+     * compressed+encrypted block per partition.
+     *
+     * <p>Blocks are closed on class boundaries only: a class's records always
+     * land in a single block, which keeps the runtime's cache simple (one
+     * materialized block covers a whole class walk).
+     */
+    private static void partitionAndCompress(List<ClassIndexEntry> sortedIndex,
+                                             List<List<byte[]>> sortedRecordsPerClass,
+                                             byte[] aesKey,
+                                             List<BlockTableEntry> blockTable,
+                                             List<byte[]> compBlocks) {
+        if (sortedIndex.isEmpty()) {
+            return;
         }
 
-        // Assign relative offsets now that the MethodData block order is fixed.
-        int offset = 0;
-        int recordIndex = 0;
+        ByteArrayOutputStream rawBuf = new ByteArrayOutputStream(
+                Const.MULTI_DEX_CODE_BLOCK_TARGET_SIZE);
+        int blockRawOffset = sortedIndex.get(0).methodDataOff;
+        int blockRawSize = 0;
+        int recordCursor = 0;
+
         for (ClassIndexEntry cie : sortedIndex) {
-            cie.methodDataOff = offset;
-            for (int i = 0; i < (cie.methodCount & 0xffff); i++) {
-                offset += sortedMethodData.get(recordIndex++).length;
+            for (byte[] rec : sortedRecordsPerClass.get(recordCursor++)) {
+                rawBuf.write(rec, 0, rec.length);
+                blockRawSize += rec.length;
+            }
+            if (blockRawSize >= Const.MULTI_DEX_CODE_BLOCK_TARGET_SIZE) {
+                blockRawOffset = appendBlock(blockTable, compBlocks, blockIdx(blockTable),
+                        blockRawOffset, blockRawSize, rawBuf, aesKey);
+                blockRawSize = 0;
+                rawBuf.reset();
             }
         }
+        if (blockRawSize > 0) {
+            appendBlock(blockTable, compBlocks, blockIdx(blockTable),
+                    blockRawOffset, blockRawSize, rawBuf, aesKey);
+        }
+    }
 
-        multiDexCode.setMethodDataOffset(
-                Const.MULTI_DEX_CODE_HEADER_SIZE
-                        + sortedIndex.size() * Const.MULTI_DEX_CODE_CLASS_INDEX_ENTRY_SIZE);
-        multiDexCode.setClassIndex(sortedIndex);
-        multiDexCode.setMethodData(sortedMethodData);
-        return multiDexCode;
+    private static int blockIdx(List<BlockTableEntry> blockTable) {
+        return blockTable.size();
+    }
+
+    /**
+     * Compress + encrypt one block and append it. Records are contiguous in the
+     * virtual raw space, so the next block starts at
+     * {@code rawOffset + rawSize}.
+     *
+     * @return the next block's rawOffset
+     */
+    private static int appendBlock(List<BlockTableEntry> blockTable,
+                                   List<byte[]> compBlocks,
+                                   int blockIdx,
+                                   int blockRawOffset,
+                                   int blockRawSize,
+                                   ByteArrayOutputStream rawBuf,
+                                   byte[] aesKey) {
+        byte[] comp = compressBlock(rawBuf.toByteArray(), aesKey, blockIdx);
+        blockTable.add(new BlockTableEntry(blockRawOffset, blockRawSize, 0, comp.length));
+        compBlocks.add(comp);
+        return blockRawOffset + blockRawSize;
+    }
+
+    /**
+     * Raw-DEFLATE one block of plaintext records, then ChaCha20-encrypt it with
+     * nonce = {@code blockIdx} (same derivation the runtime uses to decrypt:
+     * {@code build_chacha20_nonce(blockIdx)}).
+     *
+     * <p>Encryption happens after compression on purpose — the whole point of
+     * v5. The ciphertext length equals the deflated length (stream cipher), so
+     * the block table's compSize is exact.
+     */
+    private static byte[] compressBlock(byte[] rawRecords, byte[] aesKey, int blockIdx) {
+        byte[] deflated = CryptoUtils.deflateRaw(rawRecords);
+        byte[] nonce = CryptoUtils.buildChaCha20Nonce(blockIdx);
+        byte[] encrypted = CryptoUtils.chacha20Crypt(aesKey, nonce, deflated);
+        if (encrypted == null || encrypted.length != deflated.length) {
+            throw new IllegalStateException("block chacha20 encrypt failed");
+        }
+        return encrypted;
     }
 
     /**
@@ -153,6 +279,10 @@ public class MultiDexCodeUtils {
      * {@code MultiDexCode::getMethodData}, which advances by
      * {@code 6 + insnsSize}. Storing the code-unit count here would make the
      * runtime read twice as far and land mid-record.
+     *
+     * <p>v5: {@code ins.getInstructionsData()} holds <b>plaintext</b> insns.
+     * Encryption is per-block ({@link #compressBlock}); v4 encrypted per method
+     * here, which made the payload incompressible.
      */
     private static byte[] encodeMethodData(Instruction ins) {
         byte[] data = ins.getInstructionsData();
@@ -164,13 +294,13 @@ public class MultiDexCodeUtils {
     }
 
     /**
-     * Write the payload out in v4 layout: header, ClassIndex[], MethodData[].
-     *
-     * <p>Everything is little-endian; the runtime reads these fields straight
-     * out of mapped memory.
+     * Write the payload out in the v5 layout: header, ClassIndex[], BlockTable[],
+     * Blocks[]. Everything is little-endian; the runtime reads these fields
+     * straight out of mapped memory.
      */
     public static void writeMultiDexCode(String out, MultiDexCode multiDexCode) {
-        if (multiDexCode.getClassIndex() == null || multiDexCode.getClassIndex().isEmpty()) {
+        if (multiDexCode.getClassIndex() == null || multiDexCode.getClassIndex().isEmpty()
+                || multiDexCode.getBlockTable() == null || multiDexCode.getBlockTable().isEmpty()) {
             return;
         }
 
@@ -179,17 +309,23 @@ public class MultiDexCodeUtils {
             bufferedOut = new BufferedOutputStream(
                     new FileOutputStream(out), WRITE_BUFFER_SIZE);
 
+            // Header (24 bytes)
             bufferedOut.write(Endian.makeLittleEndian(Const.MULTI_DEX_CODE_MAGIC));
             bufferedOut.write(Endian.makeLittleEndian(multiDexCode.getVersion()));
             bufferedOut.write(Endian.makeLittleEndian(multiDexCode.getDexCount()));
             bufferedOut.write(Endian.makeLittleEndian(multiDexCode.getClassIndexOffset()));
-            bufferedOut.write(Endian.makeLittleEndian(multiDexCode.getMethodDataOffset()));
+            bufferedOut.write(Endian.makeLittleEndian(multiDexCode.getBlockTableOffset()));
+            bufferedOut.write(Endian.makeLittleEndian(multiDexCode.getBlockCount()));
+            bufferedOut.write(Endian.makeLittleEndian(0));
 
             for (ClassIndexEntry entry : multiDexCode.getClassIndex()) {
                 bufferedOut.write(entry.toBytes());
             }
-            for (byte[] record : multiDexCode.getMethodData()) {
-                bufferedOut.write(record);
+            for (BlockTableEntry entry : multiDexCode.getBlockTable()) {
+                bufferedOut.write(entry.toBytes());
+            }
+            for (byte[] block : multiDexCode.getBlocks()) {
+                bufferedOut.write(block);
             }
         } catch (IOException e) {
             e.printStackTrace();

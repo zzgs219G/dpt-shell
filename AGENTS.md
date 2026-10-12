@@ -159,7 +159,9 @@ executable/
   - key 沿用 `g_shell_config.aes_key`（32B），未改密钥体系
   - nonce = `methodIdx` 的 12 字节 LE 编码（低 4 字节有效）
   - counter 从 0；v2 RC4 分支已随 Task 1.3 收尾**删除**（1.6 验收 grep 零命中）
-  - 载荷版本 `MULTI_DEX_CODE_VERSION` 2 → 3（Task 1.1 后最终为 **4**）
+  - 载荷版本 `MULTI_DEX_CODE_VERSION` 2 → 3（Task 1.1 后曾为 **4**；2026-10-12
+    起为 **5**：记录分块压缩（先 deflate 后块级加密），见 `Const.MULTI_DEX_CODE_VERSION`
+    与 `MultiDexCodeV5Test`）
 - **Task 1.6 集成验收已执行**（2026-10-07）：报告与终态设计已归档
   `docs/归档/phase1-性能优化方案.zip`；✅7 / ❌3（打包 −24.7% 未达 −30%、
   冷启动 +299ms、内存 +240MB 级）/ ⏳4+，遗留问题归 Phase 2
