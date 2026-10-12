@@ -11,6 +11,41 @@
 
 namespace dpt::data {
 
+/**
+ * Raw DEFLATE inflate (zlib windowBits = -15), matching the build side's
+ * CryptoUtils.deflateRaw (nowrap). The inflated length must equal dstLen
+ * exactly — anything else means the block or the table is corrupt.
+ */
+static bool inflate_raw(const uint8_t *src, size_t srcLen, uint8_t *dst, size_t dstLen) {
+    if (srcLen == 0 || dstLen == 0 || dstLen > DPT_MULTI_DEX_CODE_BLOCK_MAX_RAW) {
+        return false;
+    }
+    z_stream zs{};
+    if (inflateInit2(&zs, -15) != Z_OK) {
+        return false;
+    }
+    zs.next_in = const_cast<Bytef *>(reinterpret_cast<const Bytef *>(src));
+    zs.avail_in = static_cast<uInt>(srcLen);
+    zs.next_out = reinterpret_cast<Bytef *>(dst);
+    zs.avail_out = static_cast<uInt>(dstLen);
+    int rc = inflate(&zs, Z_FINISH);
+    inflateEnd(&zs);
+    return rc == Z_STREAM_END && zs.avail_out == 0;
+}
+
+/** v5 restore routine: blocks are already decrypted, records are plaintext. */
+static bool restore_insns_memcpy(const uint8_t * /*key*/,
+                                 uint32_t /*methodIdx*/,
+                                 const uint8_t *in,
+                                 size_t inlen,
+                                 uint8_t *out) {
+    if (in == nullptr || out == nullptr || inlen == 0) {
+        return false;
+    }
+    memcpy(out, in, inlen);
+    return true;
+}
+
 dpt::data::MultiDexCode* dpt::data::MultiDexCode::getInst(){
     static auto *m_inst = new MultiDexCode();
     return m_inst;
@@ -196,41 +231,6 @@ const BlockTableEntry* dpt::data::MultiDexCode::findBlock(uint32_t rawOffset) co
             [](uint32_t key, const BlockTableEntry &e) { return key < e.rawOffset; });
     if (it == begin) return nullptr;
     return it - 1;
-}
-
-/**
- * Raw DEFLATE inflate (zlib windowBits = -15), matching the build side's
- * CryptoUtils.deflateRaw (nowrap). The inflated length must equal dstLen
- * exactly — anything else means the block or the table is corrupt.
- */
-static bool inflate_raw(const uint8_t *src, size_t srcLen, uint8_t *dst, size_t dstLen) {
-    if (srcLen == 0 || dstLen == 0 || dstLen > DPT_MULTI_DEX_CODE_BLOCK_MAX_RAW) {
-        return false;
-    }
-    z_stream zs{};
-    if (inflateInit2(&zs, -15) != Z_OK) {
-        return false;
-    }
-    zs.next_in = const_cast<Bytef *>(reinterpret_cast<const Bytef *>(src));
-    zs.avail_in = static_cast<uInt>(srcLen);
-    zs.next_out = reinterpret_cast<Bytef *>(dst);
-    zs.avail_out = static_cast<uInt>(dstLen);
-    int rc = inflate(&zs, Z_FINISH);
-    inflateEnd(&zs);
-    return rc == Z_STREAM_END && zs.avail_out == 0;
-}
-
-/** v5 restore routine: blocks are already decrypted, records are plaintext. */
-static bool restore_insns_memcpy(const uint8_t * /*key*/,
-                                 uint32_t /*methodIdx*/,
-                                 const uint8_t *in,
-                                 size_t inlen,
-                                 uint8_t *out) {
-    if (in == nullptr || out == nullptr || inlen == 0) {
-        return false;
-    }
-    memcpy(out, in, inlen);
-    return true;
 }
 
 bool dpt::data::MultiDexCode::materializeBlock(uint32_t blockIdx,
