@@ -221,9 +221,13 @@ public class Apk extends AndroidPackage {
          *======================================*/
         apk.copyNativeLibs(apkMainProcessPath);
 
-        if (!apk.isPlain()) {
-            apk.encryptSoFiles(apkMainProcessPath, encKey);
-        }
+        // Plain mode keeps the shell so's .bitcode section RC4-encrypted: the
+        // native side unconditionally decrypts that section at load time
+        // (DECRYPT_BITCODE is always defined), so skipping the encryption here
+        // corrupts the section and crashes the shell with SIGILL. This is the
+        // so's self-decryption mechanism, unrelated to the app dexes, and
+        // neither its presence nor its content affects packer fingerprinting.
+        apk.encryptSoFiles(apkMainProcessPath, encKey);
 
         /*======================================*
          * Build package
