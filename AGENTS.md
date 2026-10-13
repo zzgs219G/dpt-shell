@@ -135,6 +135,10 @@ executable/
 
 ## 7. 改动纪律
 
+- **工具调用必须并行**：模型后端（NVIDIA 免费 API）响应延迟高，串行逐个调用
+  会成倍浪费时间。**没有数据依赖的调用（读多个文件、多处 grep、独立的 adb / git
+  查询、编译与互不依赖的检查）必须合并到同一个回复里并行发出**；只有后一步
+  需要前一步的输出时才串行。这条优先级很高，是本环境实测得出的效率铁律。
 - **不要**在 commit message 里加 `Co-Authored-By: Claude` 之类的 trailer，
   除非用户明确要求。它会改变 GitHub 的贡献者统计。
 - **不要**顺手改无关代码或重新格式化。改动聚焦到当前任务。
@@ -153,29 +157,33 @@ executable/
 `build.yml` **不上传 artifact**，跑完产物即丢。要拿完整产物，走 `release.yml`
 （打 tag）或在有 Android 环境的机器上本地构建。
 
-## 9. 当前进度
+## 9. 当前进度（2026-10-13 更新，以 v1.1.3 为基准）
 
-- **Phase 1 Task 1.3 已完成**：指令加密从 RC4 切换为 ChaCha20
-  - key 沿用 `g_shell_config.aes_key`（32B），未改密钥体系
-  - nonce = `methodIdx` 的 12 字节 LE 编码（低 4 字节有效）
-  - counter 从 0；v2 RC4 分支已随 Task 1.3 收尾**删除**（1.6 验收 grep 零命中）
-  - 载荷版本 `MULTI_DEX_CODE_VERSION` 2 → 3（Task 1.1 后曾为 **4**；2026-10-12
-    起为 **5**：记录分块压缩（先 deflate 后块级加密），见 `Const.MULTI_DEX_CODE_VERSION`
-    与 `MultiDexCodeV5Test`）
-- **Task 1.6 集成验收已执行**（2026-10-07）：报告与终态设计已归档
-  `docs/归档/phase1-性能优化方案.zip`；✅7 / ❌3（打包 −24.7% 未达 −30%、
-  冷启动 +299ms、内存 +240MB 级）/ ⏳4+，遗留问题归 Phase 2
-  - 同日补测**原作者 v2.21.0 汇报口径**（报告 §四）：打包快 23.0%、
-    体积 +0.45%~0.89%（持平）、运行时冷启动慢 26.0%/内存重 17.8%（**两轴劣于上游**）；
-    纯 v2.21.0 打 21-dex 即崩（`catch (Exception)` 漏 `AssertionError`），
-    对照组用了 1 行补丁（披露见报告 §4.3）
-- 后续任务与设计见 `docs/进度与交接.md`（执行进度与交接，含 Task 1.4 实施记录与性能基准）
-  （Phase 1 方案已归档 `docs/归档/phase1-性能优化方案.zip`）
-- v1.0.1~1.0.3 启动闪退的根因与修复见 `docs/启动闪退根因分析.md`
-- **内存路径 VerifyError（v1.0.5 触发 / v1.0.6 修复）已真机验证**（2026-10-06，Android 16）：
-  根因是 ART 不暴露注册 buffer 地址导致 gate 白名单拒绝，修复见
-  `docs/启动闪退根因分析.md` §9 与 `docs/进度与交接.md` §10
-- **v1.0.9 已真机验证通过**（2026-10-07，Android 16，默认内存路径）：修复了
-  v1.0.8 的启动 SIGSEGV（`restoreRead` 用途混用，由 v1.0.7 引入），
-  见 `docs/启动闪退根因分析.md` §十 与 `docs/进度与交接.md` §11.6。
-  当前 `HEAD` = `origin/main` = `v1.0.9`
+- **当前发布 = v1.1.3**（tag `v1.1.3` = `1ab54d0`，`dpt.jar -v` 自报一致）：
+  - 指令加密 ChaCha20（Phase 1 Task 1.3）；载荷 **v5 分块压缩**（先 deflate 后
+    块级加密，`Const.MULTI_DEX_CODE_VERSION`，运行时只认 v5，见 `MultiDexCodeV5Test`）
+  - `-S` 收敛为统一 `0x0e` 填料；字符串解密桩 **L1 缓存**（真机实测无回归，
+    CPU/PSS 小幅改善）；`dpt.jar -v` 自报修复
+  - 默认**磁盘加载**（code_cache 落盘），内存路径 opt-in（`--use-inmemory-dex`）
+  - 壳内 `BackgroundDexopt`（exec 路线）**实测无效**：App 域（untrusted_app）被
+    SELinux 拦截无权执行 dex2oat。代码仍在（`ProxyApplication` 调用，静默失败
+    无害），是否删除待定
+- **性能归因结论（真机 + atrace 实证，后续优化的指导基线）**：
+  - 全模块加壳冷启动 ~427ms vs 原生 ~195ms（+232ms），≈82% 来自「基础加壳」模块，
+    其余模块合计仅 ~40ms
+  - 主因 = 启动期对运行时还原 dex 的 **VerifyClass（1,660+ 次）+ 解释执行**；
+    baseline profile 失配坐实（装包日志 `speed-profile → verify because there
+    is no valid profile`）
+  - **隐藏 dex 拿不到 AOT 是架构性的**：装包期 dex2oat 只编译 APK 根；
+    InMemoryDexClassLoader 无 odex 落点；落盘路线补 dexopt 被 SELinux 拦——三条路全死
+- **威胁模型（用户明确，一切取舍以此为准）**：**防特征检测（安装器报毒），
+  不防脱壳**——「脱壳前防御」（加密/抽取/隐藏）与「壳特征」本是同一批东西
+- **v1.1.4**（仅新增一个参数，无其他行为变化）：`--plain` 防特征模式（仅 APK）——
+  不抽取指令、frida/CRC/anti-debug 全关，业务 dex 完整明文走既有尾巴 zip +
+  落盘路径，壳特征（壳 so / 代理 Application / config）保留；真机实测冷启动
+  ~330ms（较全防御 -22%；落盘无 AOT，到不了原生 ~195ms）。附带两处修复：
+  `init_app` 对无 xixin_data 的包安全跳过（空 optional 守卫）；壳 so `.bitcode`
+  段在 plain 下**必须保留加密**（native 无条件自解密，跳过即 SIGILL，真机踩坑）
+- 历史根因文档仍有效：`docs/启动闪退根因分析.md`（v1.0.x 系列）、
+  `docs/进度与交接.md`；性能/防特征调研沉淀在 apk-protect-action 仓库 docs/
+- 当前 `HEAD` = `origin/main` = `v1.1.4`
