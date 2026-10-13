@@ -39,6 +39,12 @@ public class Const {
     public static final String OPTION_SMALLER = "S";
     public static final String OPTION_SMALLER_LONG = "smaller";
 
+    // Plain pack mode: no instruction extraction, no code encryption. The
+    // original dexes ride along intact in the appended zip, all runtime risk
+    // checks are disabled. Protection is minimal by design (anti-detection of
+    // packer features is the goal, not resisting unpacking).
+    public static final String OPTION_PLAIN_LONG = "plain";
+
     public static final String OPTION_PROTECT_CONFIG = "c";
     public static final String OPTION_PROTECT_CONFIG_LONG = "protect-config";
 

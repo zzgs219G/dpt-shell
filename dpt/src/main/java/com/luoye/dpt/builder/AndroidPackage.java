@@ -70,6 +70,7 @@ public abstract class AndroidPackage {
         public boolean verifySign = false;
         public int riskCheckFlags = 0;
         public boolean useInmemoryDex = false;
+        public boolean plain = false;
 
         public Builder filePath(String path) {
             this.filePath = path;
@@ -113,6 +114,11 @@ public abstract class AndroidPackage {
 
         public Builder useInmemoryDex(boolean useInmemoryDex) {
             this.useInmemoryDex = useInmemoryDex;
+            return this;
+        }
+
+        public Builder plain(boolean plain) {
+            this.plain = plain;
             return this;
         }
 
@@ -164,6 +170,7 @@ public abstract class AndroidPackage {
     private boolean verifySign = false;
     private int riskCheckFlags = 0;
     private boolean useInmemoryDex = false;
+    private boolean plain = false;
 
     public AndroidPackage(Builder builder) {
         setFilePath(builder.filePath);
@@ -181,6 +188,25 @@ public abstract class AndroidPackage {
         setVerifySign(builder.verifySign);
         setRiskCheckFlags(builder.riskCheckFlags);
         setUseInmemoryDex(builder.useInmemoryDex);
+        setPlain(builder.plain);
+    }
+
+    /**
+     * Plain pack mode: no instruction extraction, all runtime risk checks
+     * disabled. The risk-check flags are forced here so the config the
+     * runtime reads always matches, regardless of what the CLI passed.
+     */
+    private void setPlain(boolean plain) {
+        this.plain = plain;
+        if (plain) {
+            this.riskCheckFlags = Const.FLAG_DISABLE_FRIDA_DETECT
+                    | Const.FLAG_DISABLE_CRC_DETECT
+                    | Const.FLAG_DISABLE_ANTI_DEBUG;
+        }
+    }
+
+    public boolean isPlain() {
+        return plain;
     }
 
     public void setProtectConfigFile(String protectConfigFile) {

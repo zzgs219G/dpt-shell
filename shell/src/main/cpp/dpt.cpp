@@ -870,8 +870,17 @@ DPT_ENCRYPT void init_app(JNIEnv *env, jclass __unused) {
     else {
         DLOGD("no need read codeitem from zip");
     }
-    auto [entry_data, entry_size] = g_codeItemFileData.value();
-    readCodeItem((uint8_t *)entry_data, entry_size);
+
+    // Plain packs carry no xixin_data at all: the dexes ride along intact in
+    // the appended zip, there is nothing to restore. Skip instead of
+    // dereferencing an empty optional (which would abort).
+    if (g_codeItemFileData.has_value()) {
+        auto [entry_data, entry_size] = g_codeItemFileData.value();
+        readCodeItem((uint8_t *)entry_data, entry_size);
+    }
+    else {
+        DLOGI("no code item payload (plain pack), skip insns restore");
+    }
 
     if (g_use_in_memory_dex) {
         // Task 1.4: in-memory mode never writes code_cache. If the in-memory

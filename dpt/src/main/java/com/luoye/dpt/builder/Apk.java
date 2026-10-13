@@ -204,7 +204,12 @@ public class Apk extends AndroidPackage {
         String assetsPath = apk.getOutAssetsDir(apkMainProcessPath).getAbsolutePath();
 
         apk.addJunkCodeDex(apkMainProcessPath);
-        apk.extractDexCode(apkMainProcessPath, assetsPath, encKey);
+        if (!apk.isPlain()) {
+            apk.extractDexCode(apkMainProcessPath, assetsPath, encKey);
+        }
+        else {
+            LogUtils.info("Plain mode: skip instruction extraction, dexes stay intact.");
+        }
         apk.compressDexFiles(apkMainProcessPath);
         apk.deleteAllDexFiles(apkMainProcessPath);
         apk.combineDexZipWithShellDex(apkMainProcessPath);
@@ -216,7 +221,9 @@ public class Apk extends AndroidPackage {
          *======================================*/
         apk.copyNativeLibs(apkMainProcessPath);
 
-        apk.encryptSoFiles(apkMainProcessPath, encKey);
+        if (!apk.isPlain()) {
+            apk.encryptSoFiles(apkMainProcessPath, encKey);
+        }
 
         /*======================================*
          * Build package
