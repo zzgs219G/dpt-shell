@@ -21,9 +21,6 @@
 #include <jni.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
-#include <iostream>
-#include <sstream>
-#include <iomanip>
 #include <cstdint>
 #include <memory>
 #include <mutex>

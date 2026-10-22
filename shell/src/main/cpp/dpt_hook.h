@@ -4,7 +4,6 @@
 
 #ifndef DPT_DPT_HOOK_H
 #define DPT_DPT_HOOK_H
-#include <iostream>
 #include <cstdint>
 #include <sys/mman.h>
 #include <android/api-level.h>

@@ -740,13 +740,17 @@ void printTime(__unused const char *msg, __unused clock_t start) {
 
 
 std::string to_hex(const uint8_t *data, size_t length) {
-    std::stringstream ss;
-
-    ss << std::hex << std::setfill('0');
-
+    // 手写十六进制转换（2026-10 体积优化）。
+    // 原实现用 std::stringstream + std::hex/setfill/setw，只为一个
+    // "20 字节二进制转 40 字符 hex" 的用途，却把 libc++ 的
+    // iostream/locale 整条链（numpunct/moneypunct/codecvt/time_put/…）
+    // 拖进产物。实测该链在 arm64 libxixin.so 里约 200+ KB。
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(length * 2);
     for (size_t i = 0; i < length; ++i) {
-        ss << std::setw(2) << static_cast<int>(data[i]);
+        out.push_back(kHex[(data[i] >> 4) & 0xF]);
+        out.push_back(kHex[data[i] & 0xF]);
     }
-
-    return ss.str();
+    return out;
 }

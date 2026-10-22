@@ -4,7 +4,7 @@
 
 #include "dpt.h"
 #include "dpt_crypto.h"
-#include "external/json/json.hpp"
+#include "common/dpt_json.h"   // 极简字段提取，取代 external/json/json.hpp（体积优化）
 
 #include <mz_strm.h>
 
@@ -993,38 +993,48 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                 return;
             }
 
-            try {
+            {
                 std::string jsonStr = std::string(decrypted_data.begin(), decrypted_data.end());
                 DLOGD("raw config: '%s'", jsonStr.c_str());
 
-                nlohmann::json shell_config = nlohmann::json::parse(jsonStr);
-                const char *keyAppName = AY_OBFUSCATE("app_name");
-                const char *keyAcfName = AY_OBFUSCATE("acf_name");
-                const char *keyJniClsName = AY_OBFUSCATE("jni_cls_name");
-                const char *keyAppSignSha256 = AY_OBFUSCATE("app_sign_sha256");
-                const char *keyDexSign = AY_OBFUSCATE("dex_sign");
-                const char *keyJunkClsName = AY_OBFUSCATE("junk_cls_name");
-                const char *keyRiskCheckFlags = AY_OBFUSCATE("risk_check_flags");
-                const char *keyUseInMemoryDex = AY_OBFUSCATE("use_inmemory_dex");
-                g_shell_config.application_name = shell_config.value(keyAppName, "");
-                g_shell_config.application_component_factory = shell_config.value(keyAcfName, "");
-                g_shell_config.jni_class_name = shell_config.value(keyJniClsName, "");
-                g_shell_config.app_sign_sha256 = shell_config.value(keyAppSignSha256, "");
-                g_shell_config.dex_sign = shell_config.value(keyDexSign, "");
-                g_shell_config.junk_class_name = shell_config.value(keyJunkClsName, "");
-                g_shell_config.risk_check_flags = shell_config.value(keyRiskCheckFlags, 0);
-                g_shell_config.use_inmemory_dex = shell_config.value(keyUseInMemoryDex, false);
+                // 极简字段提取（common/dpt_json.h），取代 nlohmann/json.hpp。
+                // 为什么换：json.hpp 是 22,875 行的通用库，而这里只读 8 个
+                // 扁平字段，模板实例化实测占 arm64 产物 ~149 KB。
+                //
+                // ⚠️ 行为必须与旧实现一致：旧代码是
+                //      try { auto j = parse(s); 逐字段赋值 } catch { ELOG }
+                //    即【解析失败 → 所有字段保持默认值】（赋值全在 parse 之后）。
+                //    若只做逐字段扫描，截断的 JSON 会把前半段当有效值，
+                //    与旧行为不符（对拍测试抓出过）。故先整份校验。
+                if (!json::is_valid_object(jsonStr)) {
+                    ELOG("parse shell config failed: invalid json");
+                } else {
+                    const char *keyAppName = AY_OBFUSCATE("app_name");
+                    const char *keyAcfName = AY_OBFUSCATE("acf_name");
+                    const char *keyJniClsName = AY_OBFUSCATE("jni_cls_name");
+                    const char *keyAppSignSha256 = AY_OBFUSCATE("app_sign_sha256");
+                    const char *keyDexSign = AY_OBFUSCATE("dex_sign");
+                    const char *keyJunkClsName = AY_OBFUSCATE("junk_cls_name");
+                    const char *keyRiskCheckFlags = AY_OBFUSCATE("risk_check_flags");
+                    const char *keyUseInMemoryDex = AY_OBFUSCATE("use_inmemory_dex");
+                    g_shell_config.application_name = json::get_string(jsonStr, keyAppName, "");
+                    g_shell_config.application_component_factory = json::get_string(jsonStr, keyAcfName, "");
+                    g_shell_config.jni_class_name = json::get_string(jsonStr, keyJniClsName, "");
+                    g_shell_config.app_sign_sha256 = json::get_string(jsonStr, keyAppSignSha256, "");
+                    g_shell_config.dex_sign = json::get_string(jsonStr, keyDexSign, "");
+                    g_shell_config.junk_class_name = json::get_string(jsonStr, keyJunkClsName, "");
+                    g_shell_config.risk_check_flags = json::get_uint(jsonStr, keyRiskCheckFlags, 0);
+                    g_shell_config.use_inmemory_dex = json::get_bool(jsonStr, keyUseInMemoryDex, false);
 
-                DLOGD("application_name = %s", g_shell_config.application_name.c_str());
-                DLOGD("application_component_factory = %s", g_shell_config.application_component_factory.c_str());
-                DLOGD("jni_class_name = %s", g_shell_config.jni_class_name.c_str());
-                DLOGD("app_sign_sha256 = %s", g_shell_config.app_sign_sha256.c_str());
-                DLOGD("dex_sign = %s", g_shell_config.dex_sign.c_str());
-                DLOGD("junk_class_name = %s", g_shell_config.junk_class_name.c_str());
-                DLOGD("risk_check_flags = 0x%x", g_shell_config.risk_check_flags);
-                DLOGD("use_inmemory_dex = %d", g_shell_config.use_inmemory_dex ? 1 : 0);
-            } catch (const std::exception &e) {
-                ELOG("parse shell config failed: %s", e.what());
+                    DLOGD("application_name = %s", g_shell_config.application_name.c_str());
+                    DLOGD("application_component_factory = %s", g_shell_config.application_component_factory.c_str());
+                    DLOGD("jni_class_name = %s", g_shell_config.jni_class_name.c_str());
+                    DLOGD("app_sign_sha256 = %s", g_shell_config.app_sign_sha256.c_str());
+                    DLOGD("dex_sign = %s", g_shell_config.dex_sign.c_str());
+                    DLOGD("junk_class_name = %s", g_shell_config.junk_class_name.c_str());
+                    DLOGD("risk_check_flags = 0x%x", g_shell_config.risk_check_flags);
+                    DLOGD("use_inmemory_dex = %d", g_shell_config.use_inmemory_dex ? 1 : 0);
+                }
             }
         }
     }
