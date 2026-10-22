@@ -74,8 +74,28 @@ else()
     set(OPTIMIZATION_LEVEL "-Oz")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden ${OPTIMIZATION_LEVEL}")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden ${OPTIMIZATION_LEVEL}")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
-    message("closed log & stripped so symbols")
+    # ── --gc-sections（2026-10 补）──────────────────────────────────
+    # NDK 的 CMake 工具链默认已带 -ffunction-sections/-fdata-sections
+    # （$NDK/build/cmake/flags.cmake:30、android-legacy.toolchain.cmake:466），
+    # 即编译期早就是"一函数一段"。**缺的一直是链接期回收**：
+    # 不分段不回收 = 静态库整个 .o 被拉进 .text，用不到的函数也躺着。
+    #
+    # 实测（arm64 基线 754,480 B，其中 .text 469,048 B = 62.4%）：
+    #   · 主工程 6 个 TU 自己的 .text 仅 ~152 KB
+    #   · 其余 ~317 KB 来自静态库（mbedtls 82 模块全开 / Dobby / bytehook）
+    # 孤立端到端实测（strip 后，只调 ChaCha20/AES/HMAC/SHA256 四个 API）：
+    #   mbedtls 全量库 + 无 gc = 365,544 B
+    #   mbedtls 全量库 + 本行   =  38,512 B   (-89.5%)
+    # 即【仅本行这一个 flag】就能把静态库里未引用的函数全部回收，
+    # 不需要先裁 mbedtls_config.h。裁 config 是进一步的优化，不是前提。
+    #
+    # ⚠️ 风险：被 hook 的函数、JNI 入口、段属性函数若被误回收会运行期崩溃。
+    #    JNI_OnLoad/JNI_OnUnload 走 JNIEXPORT → 动态符号表引用，不会回收；
+    #    DPT_UNKNOWN_DATA 走 KEEP_SYMBOL 同理。
+    #    ⚠️ DPT_ENCRYPT 目前只有 section() 属性、没有 used/retain —— 这是既有的
+    #    隐患（本次改动不引入也不修复），须由 CI + 真机验证兜底。
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL -Wl,--gc-sections")
+    message("closed log & stripped so symbols (gc-sections on)")
 endif()
 
 message("so name: ${SO_NAME}")
