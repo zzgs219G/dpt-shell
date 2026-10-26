@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.31.1)
 
 project("dpt")
 
+# 段加密密钥派生链（自研，2026-10-26）：
+#   dpt_keyladder.c 提供 HKDF 派生；dpt_cert.c 从已安装 APK 提证书 DER。
+#   两者共同支撑"key 不落盘、运行期从证书派生"的段加密。
+# ⚠️ 注释必须留在 set() 外面：CMake 会把它当成传入 add_library 的源文件，
+#    报 `Cannot find source file: //*` -> `No SOURCES given to target`。
 set(DPT_NATIVE_SOURCE
         dpt.cpp
         dpt_hook.cpp
@@ -23,9 +28,6 @@ set(DPT_NATIVE_SOURCE
         reflect/android_app_Application.cpp
         reflect/android_app_LoadedApk.cpp
         reflect/android_app_ContextImpl.cpp
-        /* 段加密密钥派生链（自研，2026-10-26）：
-         * dpt_keyladder.c 提供 HKDF 派生；dpt_cert.c 从已安装 APK 提证书 DER。
-         * 两者共同支撑"key 不落盘、运行期从证书派生"的段加密。 */
         dpt_keyladder.c
         dpt_cert.c
         )
