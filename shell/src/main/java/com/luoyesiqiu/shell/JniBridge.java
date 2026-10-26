@@ -25,6 +25,18 @@ public class JniBridge {
     public static native Object ra(String originApplicationClassName);
     public static native String rapn();
     public static native void clinit();
+    /* 字符串解密桩的密钥流种子（packer 联动）。
+     *
+     * 谁调：stringenc 注入的桩类 <clinit> —— `SEED = JniBridge.gseed()`。
+     * 为什么由壳提供：桩合并进壳 dex、4 个算法方法 native 化之后，SEED 若仍是
+     *   dex 字面量，脱壳者读壳 dex 就拿到密钥。改为从这里取 = 删壳即拿不到，
+     *   App 崩（NoClassDefFoundError）—— 这才是"必须带着壳运行"的联动。
+     *
+     * ⚠️ 这个声明必须与 C 侧 gMethods[] 里的 {"gseed", "()J", ...} 一一对应：
+     *   RegisterNatives 会按类里【实际声明的 native 方法】注册，缺这个声明
+     *   就是 "Failed to register native method ... gseed()J" +
+     *   NoSuchMethodError（真机实测踩过）。 */
+    public static native long gseed();
 
     public static void loadShellLibs(String workspacePath) {
         final String[] allowLibNames = {Global.SHELL_SO_NAME};
