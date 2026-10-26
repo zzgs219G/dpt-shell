@@ -83,7 +83,8 @@ executable/
 └── shell-files/               ← :shell 的 build 任务，缺失则 dpt.jar 无法工作
     ├── dex/classes.dex
     ├── libs/<abi>/libxixin.so  ← arm64-v8a / armeabi-v7a / x86 / x86_64
-    └── build-key
+    ├── build-key
+    └── keyladder-seed.txt
 ```
 
 `dpt.jar` 启动时会校验 `shell-files/build-key`，key 不匹配即拒绝运行，

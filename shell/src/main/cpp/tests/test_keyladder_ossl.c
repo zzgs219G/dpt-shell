@@ -117,6 +117,14 @@ int main(void) {
         printf("✅ 入参校验\n");
     else { printf("❌ 入参校验漏了\n"); fails++; }
 
+    /* 运行期 C 与打包侧 Java 的 CRC32 输入必须是同一段 .text 文件字节。
+     * 这里不验证具体 CRC 值（随测试二进制变化），只验证 .text 段能解析出来，
+     * 防止以后又退回 __start__text 之类“产物里其实不存在”的输入。 */
+    uint32_t self_text_crc = 0;
+    if (kl_text_crc_from_so("/proc/self/exe", &self_text_crc) == 0 && self_text_crc != 0)
+        printf("✅ 运行期 .text 段解析（/proc/self/exe）\n");
+    else { printf("❌ 运行期 .text 段解析失败\n"); fails++; }
+
     printf("\n%s\n", fails == 0 ? "✅ 全绿" : "❌ 有失败");
     return fails;
 }

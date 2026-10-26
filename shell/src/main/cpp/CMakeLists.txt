@@ -117,19 +117,18 @@ add_compile_definitions(SO_NAME="lib${SO_NAME}.so")
 add_compile_definitions(DPT_BUILD_KEY="${DPT_BUILD_KEY}")
 
 # ── 段加密派生链的编译期种子（2026-10-26）─────────────────────────
-# master = SHA256(DPT_KL_SEED || CRC32(.text) || 版本串)
-#   · 每个 dpt-shell 版本应不同 → string(RANDOM) 生成
-#   · 为什么不写死常量：写死 = 全版本共享一把锁，且源码里查得到
-#   · 为什么必须是 16 位 hex：dpt_keyladder.c 按 0x%016llx 解析
+# master = SHA256(DPT_KL_SEED || CRC32(.text) || "dpt-kl-v1")
+#   · 为什么不是 CMake string(RANDOM)：CMake 按 ABI configure，每个 ABI 会
+#     各生成一把 seed → 4 个 so 4 把 seed，而 dpt.jar 只读一个
+#     shell-files/keyladder-seed.txt，必然对不上。
+#   · 所以唯一来源是 Gradle：root build.gradle 生成 keyladderSeed 并持久化，
+#     shell/build.gradle 用 -DDPT_KL_SEED 传给 4 个 ABI，afterAssembleCopy
+#     落盘到 executable/shell-files/ —— 打包侧与运行期 C 同源。
+#   · 为什么必须是 16 位 hex：dpt_keyladder.c 按 0x%016llx 解析。
 if(NOT DEFINED DPT_KL_SEED OR DPT_KL_SEED STREQUAL "")
-    # 存进缓存：不缓存的话每次 cmake configure 都重新生成 → 触发全量重编，
-    # 且两次构建的 so 派生链不同（无法对拍）。实测缓存生效（二次 configure 值不变）。
-    string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef _kl_seed_tmp)
-    set(DPT_KL_SEED "${_kl_seed_tmp}" CACHE STRING "keyladder compile seed (16 hex)")
-    unset(_kl_seed_tmp)
+    message(FATAL_ERROR "DPT_KL_SEED is required. shell/build.gradle must pass -DDPT_KL_SEED (root build.gradle generates one per build).")
 endif()
-# STRIP 必须有：string(RANDOM) 的结果可能带尾随空白，直接喂给
-# MATCHES 会误判为非法（本机实测踩过）。
+# STRIP 必须有：外部传入的字符串可能带尾随空白，直接喂给 MATCHES 会误判非法。
 string(STRIP "${DPT_KL_SEED}" DPT_KL_SEED)
 string(LENGTH "${DPT_KL_SEED}" _kl_seed_len)
 
@@ -140,13 +139,7 @@ if(NOT _kl_seed_len EQUAL 16 OR NOT DPT_KL_SEED MATCHES "^[0-9a-fA-F]+$")
     message(FATAL_ERROR "DPT_KL_SEED 必须是 16 位十六进制字符串，当前长度 ${_kl_seed_len}: [${DPT_KL_SEED}]")
 endif()
 add_compile_definitions(DPT_KL_SEED=0x${DPT_KL_SEED}ULL)
-message("keyladder seed: 0x${DPT_KL_SEED} (per-build, not in source)")
-
-# 把 seed 落到文件，供 Gradle 侧的段锁箱（SoSectionLocker）读 ——
-# 运行期 C 与构建期 Java 必须用同一把 seed，否则派生出的 key 不同。
-# 为什么必须落文件：CMake 的 string(RANDOM) 在 configure 期生成，
-# Gradle 拿不到这个值（进程边界）。
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/keyladder-seed.txt" "${DPT_KL_SEED}")
+message("keyladder seed: 0x${DPT_KL_SEED} (per-build, from Gradle)")
 
 include_directories(./ )
 include_directories(./common)

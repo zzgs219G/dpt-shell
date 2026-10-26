@@ -19,12 +19,13 @@ import java.util.zip.CRC32;
  *   master = SHA256(DPT_KL_SEED || CRC32(.text) || "dpt-kl-v1")
  *
  *   三个输入的来源：
- *     · DPT_KL_SEED   编译期注入（CMake add_compile_definitions），
- *                     构建期从 so 的 .text 里反查不到，但 Gradle 可从
- *                     CMake 缓存或命令行拿到 —— 见 lockShellSo() 的 seed 参数。
+ *     · DPT_KL_SEED   root build.gradle 生成并持久化，shell/build.gradle 传给
+ *                     CMake（4 个 ABI 同一把），并落盘到 shell-files/
+ *                     keyladder-seed.txt；本类从该文件读。
  *     · CRC32(.text)  链接后即固定（--gc-sections 是链接期动作，之后
  *                     AGP 的 strip 只删 .symtab/.debug_*，不动 .text）。
- *                     本类直接读 so 文件的 .text 段算。
+ *                     本类直接读 so 文件的 .text 段算，与运行期 C 侧
+ *                     dpt_keyladder.c 的 ELF 解析同源。
  *     · certDER/pkg   由调用方从 APK 提（打包时输入 APK 已知）。
  *
  * ⚠️ 为什么用证书而不是 keystore：

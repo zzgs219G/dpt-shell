@@ -4,17 +4,18 @@
 // 设计依据见 dpt_keyladder.h。这里只写实现要点与踩过的坑。
 //
 // ⚠️ master 的来处（本文件最核心的一处）：
-//   master = SHA256( COMPILE_SEED || CRC32(.text) || so 自身构建标识 )
-//   三个输入里，COMPILE_SEED 是编译期随机常量（.rodata），
-//   CRC32(.text) 是运行期算的，构建标识来自 .comment 段内容。
+//   master = SHA256( COMPILE_SEED || CRC32(.text) || "dpt-kl-v1" )
+//   · COMPILE_SEED：编译期由 Gradle/CMake 注入，一次构建一把；
+//   · CRC32(.text)：运行期解析自身 so 的 ELF 段表，读文件里的 .text 字节；
+//   · "dpt-kl-v1"：版本串。
 //
 //   为什么不让 master 单纯等于 COMPILE_SEED：
 //     .rodata 可读，攻击者 od 一下就有。混入 CRC32(.text) 后，
 //     改 .text 任一字节 → master 变 → 段密钥变 → 解出乱码（patch 即自毁）。
 //
-//   为什么不用"读 /proc/self/maps 拿 so 基址再算 .text 地址"：
-//     .text 的地址由链接期决定，直接用外部符号地址（_end/_start）即可，
-//     不依赖 maps 解析。符号被 strip 时用 dladdr 兜底。
+//   为什么不读 /proc/self/maps 后按内存页算 CRC：
+//     打包侧加密的是文件里的 .text 字节，两侧必须以【同一份文件字节】算，
+//     否则 mprotect/重定位后的内存页可能与文件字节不一致。
 //
 
 #include "dpt_keyladder.h"
@@ -23,6 +24,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "mbedtls/sha256.h"
 #include "mbedtls/hkdf.h"
@@ -35,10 +38,13 @@
 #define DPT_KL_SEED 0x0000000000000000ULL
 #endif
 
-/* .text 的边界。链接脚本保证 _start/_end 覆盖全部代码段；
- * strip 后仍保留（它们是链接器生成的符号，不是调试符号）。 */
-extern const uint8_t __start__text[] __attribute__((weak));
-extern const uint8_t __stop__text[]  __attribute__((weak));
+/* .text 的 CRC32 输入。
+ *
+ * ⚠️ 不要用 __start__text / __stop__text：实测本仓库产物里这两个 weak 符号
+ * 不存在（本地 executable 的 arm64 so readelf 无符号），会让 CRC 退化为 0，
+ * 而打包侧 Java 读的是真正 .text 段 → 两侧 key 不同 → init_array abort。
+ * 所以这里与打包侧同源：直接解析运行期 so 文件的 ELF 段表，读 .text 字节。
+ */
 
 /* ── CRC32（硬件优先）──────────────────────────────────────────────
  *
@@ -82,26 +88,15 @@ static uint32_t kl_crc32_crc32x(const uint8_t *buf, size_t len) {
 }
 #endif
 
+/* 硬件/表驱动的统一 CRC32。
+ *
+ * armv7 分支刻意只走表：CI 实测 kl_crc32_hw 的 armv7 内联汇编没挂
+ * target("crc") 会直接 "instruction requires: crc" 编译失败；而且运行期
+ * kl_have_hw_crc() 在 armv7 恒为 0，这段汇编本来就不会被执行。 */
 static uint32_t kl_crc32_hw(const uint8_t *buf, size_t len) {
 #if defined(__aarch64__)
     return kl_crc32_crc32x(buf, len);
-#elif defined(__arm__)
-    uint32_t crc = 0xFFFFFFFFu;
-    size_t i = 0;
-    for (; i + 8 <= len; i += 8) {
-        uint32_t lo = 0, hi = 0;
-        for (int b = 0; b < 4; b++) {
-            lo |= (uint32_t) buf[i + b] << (b * 8);
-            hi |= (uint32_t) buf[i + 4 + b] << (b * 8);
-        }
-        __asm__ volatile("crc32d %0, %0, %1" : "+r"(crc) : "r"((uint64_t) ((uint64_t) hi << 32 | lo)));
-    }
-    for (; i < len; i++) {
-        __asm__ volatile("crc32b %0, %0, %1" : "+r"(crc) : "r"((uint32_t) buf[i]));
-    }
-    return ~crc;
 #else
-    /* 非 ARM（宿主/x86）：表驱动。宿主上性能无所谓，且没有 crc32x 指令。 */
     if (!kl_crc32_table_ready) kl_crc32_init_table();
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < len; i++) {
@@ -155,24 +150,206 @@ static uint32_t kl_crc32(const uint8_t *buf, size_t len) {
     return ~crc;
 }
 
+/* ── 从运行期 so 文件解析 .text 段（与打包侧 SoSectionLocker 完全同源）────
+ *
+ * 为什么不能dladdr后直接取地址：
+ *   打包侧加密的是文件里的 .text 字节；运行期要解同一把 key，必须对
+ *   【同一份文件字节】算 CRC，而不是对进程映射后的内存页算（mprotect /
+ *   重定位后字节可能不同）。
+ * 为什么不用 __start__text / __stop__text：
+ *   实测产物里这两个 weak 符号不存在（readelf 无符号），C 侧会退化成 crc=0，
+ *   与 Java 侧真实 .text CRC 不一致。
+ */
+typedef struct {
+    uint64_t shoff;    /* ELF 头 e_shoff */
+    uint16_t shentsize;
+    uint16_t shnum;
+    uint16_t shstrndx;
+} kl_elf_sh_info;
+
+static uint16_t kl_rd16(const uint8_t *p) {
+    return (uint16_t) ((uint16_t) p[0] | ((uint16_t) p[1] << 8));
+}
+static uint32_t kl_rd32(const uint8_t *p) {
+    return (uint32_t) ((uint32_t) p[0] | ((uint32_t) p[1] << 8)
+                       | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24));
+}
+static uint64_t kl_rd64(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--) v = (v << 8) | p[i];
+    return v;
+}
+
+static int kl_read_elf_header(int fd, kl_elf_sh_info *out) {
+    uint8_t eh[64];
+    ssize_t n = pread(fd, eh, sizeof(eh), 0);
+    if (n != (ssize_t) sizeof(eh)) return -1;
+    if (eh[0] != 0x7f || eh[1] != 'E' || eh[2] != 'L' || eh[3] != 'F') return -1;
+
+    /* 只处理本仓库产物：ELFDATA2LSB（小端），ELFCLASS32/64。 */
+    if (eh[5] != 1) return -1;
+    if (eh[4] != 1 && eh[4] != 2) return -1;
+    int is64 = (eh[4] == 2);
+
+    if (is64) {
+        if (sizeof(eh) < 0x40) return -1;
+        out->shoff = kl_rd64(eh + 0x28);
+        out->shentsize = kl_rd16(eh + 0x3A);
+        out->shnum = kl_rd16(eh + 0x3C);
+        out->shstrndx = kl_rd16(eh + 0x3E);
+    } else {
+        if (sizeof(eh) < 0x34) return -1;
+        out->shoff = kl_rd32(eh + 0x20);
+        out->shentsize = kl_rd16(eh + 0x2E);
+        out->shnum = kl_rd16(eh + 0x30);
+        out->shstrndx = kl_rd16(eh + 0x32);
+    }
+
+    if (out->shoff == 0 || out->shnum == 0 || out->shentsize < 40 ||
+        out->shstrndx >= out->shnum) {
+        return -1;
+    }
+    return 0;
+}
+
+/* 从 ELF 里找 .text 的 [offset, size)。失败返回负，成功返回 0。 */
+static int kl_find_text_section(int fd, uint64_t *offset_out, uint64_t *size_out) {
+    kl_elf_sh_info sh;
+    if (kl_read_elf_header(fd, &sh) != 0) return -1;
+
+    /* .shstrtab 自身也是段表项。取它的文件 offset（不是 sh_addr，可能为 0）。 */
+    uint8_t strtab_hdr[64];
+    if (sh.shentsize > sizeof(strtab_hdr)) return -1;
+    off_t strtab_hdr_off = (off_t) (sh.shoff + (uint64_t) sh.shstrndx * sh.shentsize);
+    if (pread(fd, strtab_hdr, sh.shentsize, strtab_hdr_off) != (ssize_t) sh.shentsize) return -1;
+
+    int is64 = 1; /* header 里再来一次，避免把 eh 传得到处都是 */
+    {
+        uint8_t eh[64];
+        if (pread(fd, eh, sizeof(eh), 0) != (ssize_t) sizeof(eh)) return -1;
+        is64 = (eh[4] == 2);
+    }
+
+    uint64_t strtab_off;
+    uint64_t strtab_size;
+    if (is64) {
+        strtab_off = kl_rd64(strtab_hdr + 0x18);
+        strtab_size = kl_rd64(strtab_hdr + 0x20);
+    } else {
+        strtab_off = kl_rd32(strtab_hdr + 0x10);
+        strtab_size = kl_rd32(strtab_hdr + 0x14);
+    }
+    if (strtab_off == 0 || strtab_size == 0 || strtab_size > (1u << 20)) return -1;
+
+    char *names = (char *) malloc(strtab_size + 1);
+    if (names == NULL) return -1;
+    names[strtab_size] = 0;
+
+    uint8_t shdr[64];
+    if (sh.shentsize > sizeof(shdr)) {
+        free(names);
+        return -1;
+    }
+
+    /* 段名表必须先完整读进来，否则 for 第一次 strcmp 读的是空 names。 */
+    if (pread(fd, names, strtab_size, (off_t) strtab_off) != (ssize_t) strtab_size) {
+        free(names);
+        return -1;
+    }
+
+    for (uint16_t i = 0; i < sh.shnum; i++) {
+        off_t hdr_off = (off_t) (sh.shoff + (uint64_t) i * sh.shentsize);
+        if (pread(fd, shdr, sh.shentsize, hdr_off) != (ssize_t) sh.shentsize) {
+            free(names);
+            return -1;
+        }
+
+        uint32_t name_off = kl_rd32(shdr);
+        if (name_off >= strtab_size) continue;
+        if (strcmp(names + name_off, ".text") == 0) {
+            uint64_t off, size;
+            if (is64) {
+                off = kl_rd64(shdr + 0x18);
+                size = kl_rd64(shdr + 0x20);
+            } else {
+                off = kl_rd32(shdr + 0x10);
+                size = kl_rd32(shdr + 0x14);
+            }
+            free(names);
+            if (size == 0) return -1;
+            *offset_out = off;
+            *size_out = size;
+            return 0;
+        }
+    }
+
+    free(names);
+    return -1;
+}
+
+/* 从 so 文件读 .text 算 CRC32。失败返回负。 */
+static int kl_text_crc_from_so(const char *so_path, uint32_t *crc_out) {
+    if (so_path == NULL || so_path[0] == 0 || crc_out == NULL) return -1;
+
+    int fd = open(so_path, O_RDONLY);
+    if (fd < 0) return -1;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return -1;
+    }
+
+    uint64_t off = 0, size = 0;
+    if (kl_find_text_section(fd, &off, &size) != 0) {
+        close(fd);
+        return -1;
+    }
+    if (size > (uint64_t) st.st_size || off > (uint64_t) st.st_size ||
+        off + size > (uint64_t) st.st_size) {
+        close(fd);
+        return -1;
+    }
+
+    /* .text 通常几百 KB；一次性读入再算，简单且能继续复用硬件 CRC 分支。 */
+    uint8_t *text = (uint8_t *) malloc((size_t) size);
+    if (text == NULL) {
+        close(fd);
+        return -1;
+    }
+    ssize_t n = pread(fd, text, (size_t) size, (off_t) off);
+    if (n < 0 || (uint64_t) n != size) {
+        free(text);
+        close(fd);
+        return -1;
+    }
+
+    *crc_out = kl_crc32(text, (size_t) size);
+    free(text);
+    close(fd);
+    return 0;
+}
+
 /* ── master 计算 ───────────────────────────────────────────────────
  *
- * master = SHA256( SEED_8 || CRC32(.text)_4 || so_build_id )
+ * master = SHA256( SEED_8 || CRC32(.text)_4 || "dpt-kl-v1" )
  *
- * so_build_id 来自 .comment 段（链接器写入的构建标识）。取不到就退化为
- * 只用前两项 —— 此时 master 仅绑定"版本 + 代码内容"，仍然比纯常量强。
+ * CRC32(.text) 的来源必须与打包侧 Java 一致：解析运行期 so 文件的 ELF 段表，
+ * 读 .text 的【文件字节】。不能用链接期符号（实测不存在），也不能用进程
+ * 内存页（mprotect/重定位后可能与文件字节不一致）。
+ *
+ * 返回 0 成功，-1 表示读不到 .text（此时绝不能按 crc=0 继续，否则会
+ * 解出乱码，而日志还显示“derive 成功”）。
  */
-void kl_compute_master(uint8_t out[DPT_KL_MASTER_LEN]) {
+static int kl_compute_master(const char *so_path, uint8_t out[DPT_KL_MASTER_LEN]) {
     uint8_t seed[8];
     for (int i = 0; i < 8; i++) {
         seed[i] = (uint8_t) (DPT_KL_SEED >> (i * 8));
     }
 
     uint32_t text_crc = 0;
-    /* _start/_end 是 weak 符号：被 strip 或自定义链接脚本下可能为 NULL。
-     * NULL 时退化为"仅依赖 SEED"，并明确降低强度（宁可降级也不要崩）。 */
-    if (__start__text && __stop__text && __stop__text > __start__text) {
-        text_crc = kl_crc32(__start__text, (size_t) (__stop__text - __start__text));
+    if (kl_text_crc_from_so(so_path, &text_crc) != 0) {
+        return -1;
     }
 
     mbedtls_sha256_context ctx;
@@ -191,6 +368,7 @@ void kl_compute_master(uint8_t out[DPT_KL_MASTER_LEN]) {
 
     /* 用完即擦：seed 与 text_crc 都是 master 的组成部分 */
     memset(seed, 0, sizeof(seed));
+    return 0;
 }
 
 int dpt_kl_derive_with_master(const uint8_t master[DPT_KL_MASTER_LEN],
@@ -230,13 +408,17 @@ int dpt_kl_derive_with_master(const uint8_t master[DPT_KL_MASTER_LEN],
 
 int dpt_kl_derive(const uint8_t *cert_der, size_t cert_len,
                   const char *pkg, size_t pkg_len,
+                  const char *so_path,
                   uint8_t out[DPT_KL_KEY_LEN]) {
     if (cert_der == NULL || pkg == NULL || out == NULL) return -1;
     if (pkg_len == 0) return -1;
     if (cert_len < 16 || cert_len > 8192) return -2;
 
     uint8_t master[DPT_KL_MASTER_LEN];
-    kl_compute_master(master);
+    if (kl_compute_master(so_path, master) != 0) {
+        memset(master, 0, sizeof(master));
+        return -4;
+    }
     int r = dpt_kl_derive_with_master(master, cert_der, cert_len, pkg, pkg_len, out);
     memset(master, 0, sizeof(master));
     return r;
@@ -245,11 +427,10 @@ int dpt_kl_derive(const uint8_t *cert_der, size_t cert_len,
  *
  * 调用方（dpt.cpp 的 decrypt_section）在 init_array 里跑，早于
  * JNI_OnLoad —— 那时没有 JNIEnv，也还没读 shell config。所以这个函数
- * 必须自包含：自己找 APK、提证书、读包名。
+ * 必须自包含：自己找 APK、算 .text CRC、提证书、读包名。
  *
- * so_path 只用于兜底反推 APK 路径（lib/<abi>/xxx.so → base.apk），
- * 主路径是 /proc/self/maps 里含 base.apk 的行（extractNativeLibs=true
- * 时 so 被解压到 dataDir，maps 里仍是 APK 映射）。
+ * so_path 有两个用途：① 算 CRC32(.text)；② 反推 APK 路径兜底。
+ * 主 APK 来源仍是 /proc/self/maps 里含 base.apk 的行。
  */
 
 /* 从 /proc/self/cmdline 读包名，截到首个 ':' 前。
@@ -341,7 +522,7 @@ int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) 
     int rc = dpt_cert_first_signer(apk, &cert);
     if (rc != 0) return -1;
 
-    rc = dpt_kl_derive(cert.der, cert.der_len, pkg, strlen(pkg), out);
+    rc = dpt_kl_derive(cert.der, cert.der_len, pkg, strlen(pkg), so_path, out);
     dpt_cert_free(&cert);
     return rc;
 }

@@ -723,11 +723,13 @@ public abstract class AndroidPackage {
          *   key    = HKDF(master, SHA256(certDER), "dpt-sec-v1"+pkg)
          *   master = SHA256(DPT_KL_SEED || CRC32(.text) || "dpt-kl-v1")
          *   · certDER 从【输入 APK】提（运行期设备上读的是同一个证书）
-         *   · seed    从 shell-files/keyladder-seed.txt 读（CMake
-         *              configure 时 string(RANDOM) 生成并落文件，
-         *              因为跨进程边界 Gradle 拿不到这个值）
+         *   · seed    从 shell-files/keyladder-seed.txt 读。它由 root
+         *              build.gradle 生成并持久化，shell/build.gradle 用
+         *              -DDPT_KL_SEED 传给 4 个 ABI —— 打包侧与运行期
+         *              C 侧同一把 seed，不会 per-ABI 漂移。
          *   · CRC32   由 SoSectionLocker 现算（链接后即固定；AGP 的
-         *              strip 只删 .symtab 不动 .text —— 已实测验证）
+         *              strip 只删 .symtab 不动 .text —— 已实测验证），
+         *              C 侧 dpt_keyladder.c 用同一段 .text 文件字节算。
          *
          * 两侧一致性由 KeyLadderTest 的 9 项断言锁定。 */
         String seed = readKeyladderSeed();
@@ -775,7 +777,11 @@ public abstract class AndroidPackage {
 
     }
 
-    /** 读 CMake 落盘的 keyladder seed（16 位 hex，缺则 fail-fast）。 */
+    /**
+     * 读 shell-files/keyladder-seed.txt（16 位 hex，缺则 fail-fast）。
+     * 来源：root build.gradle 生成，shell/build.gradle 的 afterAssembleCopy
+     * 落盘，与 C 侧编译宏 DPT_KL_SEED 同源。
+     */
     private String readKeyladderSeed() {
         File seedFile = new File(FileUtils.getExecutablePath(),
                 "shell-files" + File.separator + "keyladder-seed.txt");

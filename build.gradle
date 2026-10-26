@@ -9,6 +9,14 @@ static def generateHexString() {
     return Long.toHexString(secureRandom.nextLong())
 }
 
+/** keyladder seed：固定 16 位小写 hex。build-key 用 Long.toHexString
+ * （可能不足 16 位）无妨，但 CMake/Java 两侧都对 seed 做 16 位校验，
+ * 所以这里刻意补零对齐。 */
+static def generateSeedHexString() {
+    def secureRandom = new SecureRandom()
+    return String.format("%016x", secureRandom.nextLong())
+}
+
 // The shell SO name is fixed to "xixin" so the packaged library reads as a
 // brand-natural "libxixin.so" instead of gibberish. dpt.jar globs *.so under
 // shell-files/libs/<abi>/, so nothing on the packing side depends on a random name.
@@ -28,11 +36,24 @@ if (!resolvedBuildKey || resolvedBuildKey.isEmpty()) {
     dptBuildIdsFile.withOutputStream { dptBuildIds.store(it, "dpt-shell build ids. Delete to regenerate.") }
 }
 
+// keyladder seed: same lifecycle as dptBuildKey. One shell.so build must use
+// ONE seed across all ABIs; dpt.jar reads executable/shell-files/keyladder-seed.txt,
+// and the C side gets the same value via CMake. A per-ABI random here would make
+// the packaged side and the runtime side derive different keys.
+def resolvedKeyladderSeed = dptBuildIds.getProperty("keyladderSeed")
+if (!resolvedKeyladderSeed || resolvedKeyladderSeed.isEmpty()) {
+    resolvedKeyladderSeed = generateSeedHexString()
+    dptBuildIds.setProperty("keyladderSeed", resolvedKeyladderSeed)
+    dptBuildIdsFile.parentFile.mkdirs()
+    dptBuildIdsFile.withOutputStream { dptBuildIds.store(it, "dpt-shell build ids. Delete to regenerate.") }
+}
+
 ext {
     soName = "xixin"
     fullSoName = "lib${soName}.so"
     shellPackageName = generateHexString()
     dptBuildKey = resolvedBuildKey
+    keyladderSeed = resolvedKeyladderSeed
 
     // Android SDK versions
     compileSdkVersion = 36
