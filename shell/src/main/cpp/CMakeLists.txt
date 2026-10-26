@@ -129,11 +129,13 @@ endif()
 # STRIP 必须有：string(RANDOM) 的结果可能带尾随空白，直接喂给
 # MATCHES 会误判为非法（本机实测踩过）。
 string(STRIP "${DPT_KL_SEED}" DPT_KL_SEED)
-if(NOT DPT_KL_SEED MATCHES "^[0-9a-fA-F]{16}$")
-    message(FATAL_ERROR "DPT_KL_SEED 必须是 16 位十六进制字符串，当前: ${DPT_KL_SEED}")
-endif()
-if(NOT DPT_KL_SEED MATCHES "^[0-9a-fA-F]{16}$")
-    message(FATAL_ERROR "DPT_KL_SEED 必须是 16 位十六进制字符串，当前: ${DPT_KL_SEED}")
+string(LENGTH "${DPT_KL_SEED}" _kl_seed_len)
+
+# ⚠️ CMake 的 MATCHES 不支持 {n} 量词 —— "^[0-9a-fA-F]{16}$" 会恒假
+#    （本地 3.31 / CI 3.22 都是；实测 seed 合法也报 FAILED）。
+#    所以长度用 string(LENGTH) 单独比，字符集用 + 通配。
+if(NOT _kl_seed_len EQUAL 16 OR NOT DPT_KL_SEED MATCHES "^[0-9a-fA-F]+$")
+    message(FATAL_ERROR "DPT_KL_SEED 必须是 16 位十六进制字符串，当前长度 ${_kl_seed_len}: [${DPT_KL_SEED}]")
 endif()
 add_compile_definitions(DPT_KL_SEED=0x${DPT_KL_SEED}ULL)
 message("keyladder seed: 0x${DPT_KL_SEED} (per-build, not in source)")
