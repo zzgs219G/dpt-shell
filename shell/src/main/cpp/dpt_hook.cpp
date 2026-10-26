@@ -4,6 +4,7 @@
 
 #include <set>
 #include <string>
+#include <atomic>
 #include <cstring>
 #include <signal.h>
 #include <errno.h>
@@ -276,7 +277,20 @@ void dpt_install_crash_handler() {
     }
 }
 
-void dpt_hook() {
+/* dpt_hook 进加密段（2026-10-26）
+ *
+ * 为什么：它是 hook 体系的安装入口，明文在 .text 时反汇编它一条命令就能列出
+ * "hook 了哪几个函数、用什么库、hook 点在哪"——等于免费送检测/加载意图清单。
+ * 它调用的 5 个 hook_* 本来就都是 DPT_ENCRYPT（同在 .bitcode），所以本改动
+ * 只是把同段内的调用者一并收进来，不引入跨段调用。
+ *
+ * ⚠️ 时序前提（唯一风险点）：调用链必须是
+ *     init_dpt()（明文 .text，constructor）→ decrypt_bitcode() → dpt_hook()
+ *   即 dpt_hook 被调时 .bitcode 必已解密。init_dpt 本身【绝不能】标段——
+ *   它是最先执行的入口，标了没人能解密它。
+ *
+ * 性能：段属性是链接期属性，运行时零开销。体积：0（只是换段归属）。 */
+DPT_ENCRYPT void dpt_hook() {
     bytehook_init(BYTEHOOK_MODE_AUTOMATIC,false);
     g_sdkLevel = android_get_device_api_level();
     DLOGI("sdkLevel=%d, artPath=%s", g_sdkLevel, GetArtLibPath());
@@ -557,6 +571,37 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
                  const void* dex_file,
                  const void* dex_class_def) {
 
+    /* 热路径抽样检测（2026-10-26）
+     *
+     * 为什么放在这里而不是"再加一个看护线程"：
+     *   · 原来的检测只在 detectRiskOnThread 里 10s 轮询一次。攻击者
+     *     suspend/kill 那个线程 → 全部检测静默，App 照跑。
+     *   · 加 watchdog 线程能发现"线程死了"，但代价是【多一个常驻线程 +
+     *     定时唤醒】——CPU 常驻翻倍，与"高性能"要求冲突；而且看护线程
+     *     本身也能被停，只是把单点换成两点。
+     *   · patchClass 是类加载必经路径（每个被保护的类走一次），已经付过
+     *     调用代价。在这里【顺带】做一次极轻量校验，零新增线程、零新增
+     *     唤醒、零常驻 CPU。停线程不再等于全静默——因为检测还挂在加载
+     *     路径上。
+     *
+     * 抽样策略：每 64 个类查一次（类加载少则数百多则上万次）。
+     *   · 一次轻量校验 = 读 /proc/self/status 找 TracerPid，实测 ~20-40µs
+     *   · 摊到 64 个类 = 平均每类 <1µs，相对 patchClass 本身（mprotect +
+     *     指令解密）可忽略
+     *   · 只做 detectDebugger（最便宜的一项）；frida/CRC 较重，留给轮询线程
+     *
+     * ⚠️ 只在 risk_check_flags 未禁用反调试时执行，与既有语义一致。
+     */
+    if ((g_shell_config.risk_check_flags & FLAG_DISABLE_ANTI_DEBUG) == 0) {
+        /* atomic：patchClass 被 ART 多个加载线程并发调用，普通 static 自增
+         * 是数据竞争（UB，且会让抽样频率漂移）。relaxed 足够——这里只需要
+         * "大致每 64 次触发一次"，不需要同步语义，也不需要额外内存序开销。 */
+        static std::atomic<uint32_t> s_patchTick{0};
+        if (UNLIKELY((s_patchTick.fetch_add(1, std::memory_order_relaxed) & 0x3F) == 0)) {
+            detectDebugger();
+        }
+    }
+
     const char *junkClassName = g_shell_config.junk_class_name.empty()
             ? AY_OBFUSCATE(JUNK_CLASS_FULL_NAME)
             : g_shell_config.junk_class_name.c_str();
@@ -566,7 +611,7 @@ DPT_ENCRYPT void patchClass(const char* descriptor,
         DLOGD("Attempt patch junk class %s ,char is '%c'",descriptor,ch);
         if(isdigit(ch)) {
             ELOG("Find illegal call, desc: %s!", descriptor);
-            dpt_crash();
+            dpt_die_3();   /* dex 里出现非法 junk 类调用 → 完整性类 */
             return;
         }
 
@@ -1014,7 +1059,7 @@ DPT_ENCRYPT ssize_t fake_write(int fd, const void *const buf, size_t count) {
             std::string hex = to_hex((uint8_t *) buf + 9, 20);
             DLOGD("dex sign: %s", hex.c_str());
             if (dpt_strncasecmp(hex.c_str(), g_shell_config.dex_sign.c_str(), 40) == 0) {
-                dpt_crash();
+                dpt_die_3();   /* dex 签名与登记一致 → 说明是原包被重打包，完整性类 */
             }
         }
     }

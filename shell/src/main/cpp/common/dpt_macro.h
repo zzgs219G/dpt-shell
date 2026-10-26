@@ -15,14 +15,26 @@ inline int get_cache_page_size() {
 #define SECTION_NAME_BITCODE ".bitcode"
 #define SECTION_NAME_DATA ".data"
 
-#define SECTION(name) __attribute__ ((section(name)))
+#define SECTION(name) __attribute__ ((section(name), used, retain))
 #define KEEP_SYMBOL __attribute__((visibility("default")))
 #define INIT_ARRAY_SECTION __attribute__ ((constructor))
 #define ALWAYS_INLINE static inline __attribute__((always_inline))
 #define NO_INLINE __attribute__((noinline))
 #define SYS_INLINE ALWAYS_INLINE
-#define DPT_ENCRYPT SECTION(SECTION_NAME_BITCODE)
-#define DPT_DATA_SECTION SECTION(SECTION_NAME_DATA)
+/* DPT_ENCRYPT：进 .bitcode 加密段。
+ *
+ * used + retain 是【必须】的（2026-10-26 补，修 CMakeLists 里记录的既有隐患）：
+ *   - 链接开启 -Wl,--gc-sections（见 CMakeLists.txt），未标记 used/retain 的
+ *     段内函数若"看起来没人引用"会被静默回收。
+ *   - 回收的后果不是链接报错，而是运行期 SIGILL / 跳到空地址——因为
+ *     decrypt_bitcode() 按段范围整段解密，段变短了它不知道。
+ *   - DPT_ENCRYPT 函数只被同段函数或经明文 launcher 间接调用，GC 判定不了
+ *     "运行期会被解密后调用"，正是最容易被误回收的形态。
+ *   - 移植自 apk-protect-action 的同款纪律：段标记必须带 retain,used，
+ *     漏掉就会被 --gc-sections 静默回收。
+ * 代价：零运行时开销、零体积增量（只是让链接器别删）。 */
+#define DPT_ENCRYPT __attribute__ ((section(SECTION_NAME_BITCODE), used, retain))
+#define DPT_DATA_SECTION __attribute__ ((section(SECTION_NAME_DATA), used, retain))
 
 #define DEXES_ZIP_NAME "xixin_dexes.zip"
 // ART's location prefix for dex loaded through InMemoryDexClassLoader

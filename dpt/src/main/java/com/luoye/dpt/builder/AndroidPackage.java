@@ -71,6 +71,8 @@ public abstract class AndroidPackage {
         public int riskCheckFlags = 0;
         public boolean useInmemoryDex = false;
         public boolean plain = false;
+        /* --extra-dex：要合并进壳 dex 的外部 dex（可为 null = 不合并） */
+        public String extraDexPath = null;
 
         public Builder filePath(String path) {
             this.filePath = path;
@@ -119,6 +121,11 @@ public abstract class AndroidPackage {
 
         public Builder plain(boolean plain) {
             this.plain = plain;
+            return this;
+        }
+
+        public Builder extraDexPath(String extraDexPath) {
+            this.extraDexPath = extraDexPath;
             return this;
         }
 
@@ -171,6 +178,8 @@ public abstract class AndroidPackage {
     private int riskCheckFlags = 0;
     private boolean useInmemoryDex = false;
     private boolean plain = false;
+    /* --extra-dex：合并进壳 dex 的外部 dex 路径（null = 不合并，零行为变更） */
+    private String extraDexPath = null;
 
     public AndroidPackage(Builder builder) {
         setFilePath(builder.filePath);
@@ -189,6 +198,7 @@ public abstract class AndroidPackage {
         setRiskCheckFlags(builder.riskCheckFlags);
         setUseInmemoryDex(builder.useInmemoryDex);
         setPlain(builder.plain);
+        setExtraDexPath(builder.extraDexPath);
     }
 
     /**
@@ -340,6 +350,28 @@ public abstract class AndroidPackage {
 
             if(needRename) {
                 DexUtils.renamePackageName(shellDexFile, renameDexFile, shellConfig.getSlashShellPackageName());
+            }
+
+            /* --extra-dex：把外部 dex 合并进【壳 dex】（不碰业务 dex）。
+             *
+             * 为什么在这里而不是 Apk.process 主流程：
+             *   extractDexCode 之后再合并业务 dex 会读到 bogus opcode 0e00
+             *   —— 那时业务 dex 的方法体已被 00 0e 填充覆盖，DexMerger 拒绝解析。
+             *   而壳 dex（shell-files/dex/classes.dex）全程不参与抽空，
+             *   它的方法体是完整合法的，能安全合并。
+             *
+             * 合并到 rename 产物（needRename 时）或原始壳 dex，取实际被读的那个：
+             *   后续 unShellDexArray 读的就是这里的目标文件，两者必须一致。
+             *
+             * 不改 shell-files 里的共享文件：合并结果写到 WORK 临时副本，
+             * 多进程/多次打包不互相污染。
+             */
+            File mergeTarget = needRename ? renameDexFile : shellDexFile;
+            mergeTarget = mergeExtraDexIntoTempCopy(mergeTarget);
+            if (needRename) {
+                renameDexFile = mergeTarget;
+            } else {
+                shellDexFile = mergeTarget;
             }
 
             File originalDexZipFile = new File(getOutAssetsDir(packageMainProcessPath).getAbsolutePath() + File.separator + Const.KEY_DEXES_STORE_NAME);
@@ -499,8 +531,61 @@ public abstract class AndroidPackage {
         }
     }
 
-    protected void addKeepDexes(String packageDir) {
-        File keepDexTempDir = getKeepDexTempDir(packageDir);
+    /* ── 把外部 dex 合并进壳 dex（--extra-dex）──────────────────────────
+     *
+     * 返回【合并后应当被读取的那个文件】：
+     *   · 没配 --extra-dex  → 原样返回传入的 file（零行为变更）
+     *   · 配了              → 返回 WORK 下的临时副本（不改 shell-files 共享文件）
+     *
+     * 为什么不能原地改传入文件：
+     *   shell-files/dex/classes.dex 是 dpt.jar 分发的共享资产，所有打包共用。
+     *   原地写会让第二次打包把上一包的桩带进去（跨包污染），且只读介质会失败。
+     *
+     * 失败策略：不静默降级——桩没进壳 dex 就等于联动失效，
+     *   宁可打包失败也不要产出"以为防了其实没防"的包。
+     */
+    protected File mergeExtraDexIntoTempCopy(File shellDex) {
+        if (extraDexPath == null || extraDexPath.isEmpty()) {
+            return shellDex;
+        }
+        File extraDex = new File(extraDexPath);
+        if (!extraDex.isFile()) {
+            throw new IllegalStateException("--extra-dex 文件不存在: " + extraDexPath);
+        }
+        if (!shellDex.isFile()) {
+            throw new IllegalStateException("--extra-dex：壳 dex 不存在: " + shellDex);
+        }
+        File tmp;
+        try {
+            tmp = File.createTempFile("dpt-shelldex-", ".dex");
+        } catch (IOException e) {
+            throw new IllegalStateException("--extra-dex：创建临时文件失败", e);
+        }
+        try {
+            IoUtils.copyFile(shellDex.getAbsolutePath(), tmp.getAbsolutePath());
+        } catch (Exception e) {
+            tmp.delete();
+            throw new IllegalStateException("--extra-dex：复制壳 dex 失败", e);
+        }
+        if (!DexUtils.mergeDex(tmp, extraDex)) {
+            tmp.delete();
+            throw new IllegalStateException(
+                    "--extra-dex 合并失败（DexMerger 拒绝，详见上一层日志）: " + extraDexPath);
+        }
+        LogUtils.info("Merged extra dex into shell dex: %s (%d bytes)",
+                extraDexPath, tmp.length());
+        return tmp;
+    }
+
+    public String getExtraDexPath() {
+        return extraDexPath;
+    }
+
+    public void setExtraDexPath(String extraDexPath) {
+        this.extraDexPath = extraDexPath;
+    }
+
+    protected void addKeepDexes(String packageDir) {        File keepDexTempDir = getKeepDexTempDir(packageDir);
         File[] files = keepDexTempDir.listFiles();
 
         if(files != null) {

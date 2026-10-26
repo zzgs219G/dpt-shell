@@ -65,6 +65,7 @@ uint32_t readZipLength(const uint8_t *data, size_t size);
 std::optional<std::tuple<uint8_t*, size_t>> read_zip_file_entry(void* zip_addr, off_t zip_size, const char* entry_name);
 
 int find_in_maps(int count,...);
+long dpt_read_file_raw(const char *path, uint8_t **out);
 int find_in_threads_list(int count,...);
 void find_symbol_in_elf_file(const char *elf_file, char *symbol_name_out, size_t max_out_len, int keyword_count,...);
 void get_elf_section(Elf_Shdr *target,const char *elf_path,const char *sh_name);

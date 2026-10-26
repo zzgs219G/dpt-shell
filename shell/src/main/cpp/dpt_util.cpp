@@ -18,6 +18,7 @@
 #include <sys/uio.h>
 
 #include "dpt_util.h"
+#include "common/raw_syscall.h"
 #include "common/dpt_log.h"
 
 using namespace dpt;
@@ -615,36 +616,109 @@ find_symbol_in_elf_file(const char *elf_file, char *symbol_name_out, size_t max_
     } // if
 }
 
+/* dpt_read_file_raw — syscall 直调读整个文件到堆缓冲（调用方 free）
+ *
+ * 返回读取字节数，负数 = 失败；缓冲末尾补 '\0'，便于按字符串处理。
+ * 上限 32MB（防异常大文件耗尽内存）。
+ *
+ * 为什么不复用 dpt_risk.cpp 的 risk_read_file：那是该文件的 static 私有实现，
+ * 跨文件不可见；复制一份会形成"两份可能漂移的实现"（AGENTS.md 点名的隐患）。
+ * 本函数与它语义一致，但独立一份的理由是【依赖方向】：dpt_util 在更底层，
+ * 不应反向依赖 risk 模块。两者共用 common/raw_syscall.h 的 syscall 层即可。 */
+long dpt_read_file_raw(const char *path, uint8_t **out) {
+    *out = nullptr;
+    long fd = dpt_raw_syscall(__NR_openat, (long) AT_FDCWD, (long) path,
+                              O_RDONLY, 0, 0, 0);
+    if (fd < 0) return -1;
+
+    size_t cap = 65536, len = 0;
+    uint8_t *buf = static_cast<uint8_t *>(malloc(cap));
+    if (buf == nullptr) {
+        dpt_raw_syscall(__NR_close, fd, 0, 0, 0, 0, 0);
+        return -1;
+    }
+    for (;;) {
+        if (len + 4096 + 1 > cap) {
+            size_t ncap = cap * 2;
+            uint8_t *nb = static_cast<uint8_t *>(realloc(buf, ncap));
+            if (nb == nullptr) {
+                free(buf);
+                dpt_raw_syscall(__NR_close, fd, 0, 0, 0, 0, 0);
+                return -1;
+            }
+            buf = nb;
+            cap = ncap;
+        }
+        long r = dpt_raw_syscall(__NR_read, fd, (long) (buf + len),
+                                 (long) (cap - len - 1), 0, 0, 0);
+        if (r < 0) {
+            free(buf);
+            dpt_raw_syscall(__NR_close, fd, 0, 0, 0, 0, 0);
+            return -1;
+        }
+        if (r == 0) break;
+        len += static_cast<size_t>(r);
+        if (len > (32u << 20)) break;
+    }
+    dpt_raw_syscall(__NR_close, fd, 0, 0, 0, 0, 0);
+    buf[len] = '\0';
+    *out = buf;
+    return static_cast<long>(len);
+}
+
 DPT_ENCRYPT int find_in_maps(int count, ...) {
+    /* syscall 直调读 /proc/self/maps（2026-10-26）
+     *
+     * 改之前走 fopen/fgets：两者都是 libc PLT 表项，hook fgets 喂假 maps
+     * 就能让 frida 注入检测永久失明（dpt_risk.cpp 的 .text/status 探针
+     * 已在 2026-10-22 修过同款洞，此处是漏网的第三处）。
+     *
+     * 判定逻辑一行不改（宁漏勿误伤）：读失败 = 视为未检出，返回 0。
+     * 性能：一次 openat+若干 read+close，省掉 FILE 缓冲与逐行 sscanf 的
+     *      格式化开销，实测反而更快（/proc/self/maps 典型 <64KB）。
+     */
     const int MAX_READ_LINE = 10 * 1024;
     char maps_path[128] = {0};
     snprintf(maps_path, ARRAY_LENGTH(maps_path), AY_OBFUSCATE("/proc/%d/maps"), getpid());
-    FILE *fp = fopen(maps_path, "r");
+
+    uint8_t *buf = nullptr;
+    long len = dpt_read_file_raw(maps_path, &buf);
+    if (len <= 0 || buf == nullptr) {
+        DLOGW("cannot read maps, skip");
+        free(buf);
+        return 0;
+    }
+
     int found = 0;
+    int read_line = 0;
+    const char *p = reinterpret_cast<const char *>(buf);
+    const char *end = p + len;
 
-#ifdef __LP64__
-    const char* maps_line_fmt = AY_OBFUSCATE("%*llx-%*llx %*s %*llx %*s %*s %s");
-#else
-    const char *maps_line_fmt = AY_OBFUSCATE("%*x-%*x %*s %*x %*s %*s %s");
-#endif
+    while (p < end && read_line++ < MAX_READ_LINE) {
+        const char *eol = p;
+        while (eol < end && *eol != '\n') eol++;
 
-    if (fp != nullptr) {
-        char line[512] = {0};
-        int read_line = 0;
-        va_list ap;
-        while (fgets(line, sizeof(line), fp) != nullptr) {
-            if (read_line++ >= MAX_READ_LINE) {
-                break;
-            }
+        /* maps 行格式：start-end perms offset dev inode  pathname
+         * 前 5 个字段用空格分隔，第 6 个字段起是路径（可能含空格）。
+         * 原实现用 sscanf("%*llx-%*llx %*s %*llx %*s %*s %s") 等价于
+         * "跳过前 5 个空白分隔字段，取第 6 个"。这里手工跳过，避免 sscanf。 */
+        const char *q = p;
+        int skipped = 0;
+        while (q < eol && skipped < 5) {
+            while (q < eol && *q == ' ') q++;
+            while (q < eol && *q != ' ') q++;
+            skipped++;
+        }
+        while (q < eol && *q == ' ') q++;
+
+        if (q < eol) {
+            size_t item_len = static_cast<size_t>(eol - q);
             char item_name[128] = {0};
+            if (item_len >= sizeof(item_name)) item_len = sizeof(item_name) - 1;
+            memcpy(item_name, q, item_len);
 
-            int ret = sscanf(line, maps_line_fmt, item_name);
-
-            if (ret != 1) {
-                continue;
-            }
+            va_list ap;
             va_start(ap, count);
-
             for (int i = 0; i < count; i++) {
                 const char *arg = va_arg(ap, const char *);
                 if (dpt_strstr(item_name, arg) != nullptr) {
@@ -653,11 +727,11 @@ DPT_ENCRYPT int find_in_maps(int count, ...) {
                 }
             }
             va_end(ap);
-
         }
-        fclose(fp);
+        p = eol + 1;
     }
 
+    free(buf);
     return found;
 }
 

@@ -563,6 +563,11 @@ public class DexUtils {
             return true;
         }
         catch (Throwable ignored) {
+            // 不静默：--extra-dex 的调用方需要知道合并为何失败（历史上这个
+            // catch 吞掉异常，导致"合并失败"表现为一句无信息的 false）。
+            LogUtils.warn("mergeDex failed: %s + %s -> %s",
+                    dstDexFile.getName(), srcDexFile.getName(),
+                    ignored.toString());
         }
         return false;
     }

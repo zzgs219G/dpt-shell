@@ -36,6 +36,23 @@ public class Const {
     public static final String OPTION_KEEP_CLASSES = "K";
     public static final String OPTION_KEEP_CLASSES_LONG = "keep-classes";
 
+    /* --extra-dex <dex 文件>：把外部 dex 合并进【壳 dex】(classes.dex)。
+     *
+     * 用途（2026-10-26，stringenc 联动）：把 stringenc 注入的解密桩类搬进壳 dex，
+     * 使脱壳者 dump 业务 dex 时只看到"指向不存在类的调用点"，桩本身在壳里。
+     *
+     * 为什么必须是独立参数而不是复用 junkcode.dex：
+     *   JunkCodeGenerator.generateJunkCodeDex() 在 protect() 阶段【无条件覆盖】
+     *   shell-files/dex/junkcode.dex（AndroidPackage:1183），没有任何注入点。
+     *
+     * 为什么必须在 extractDexCode 之后合并：
+     *   extractDexCode 会遍历 lib 目录下所有 classes*.dex 并抽空未排除类。
+     *   桩若在那之前进 classes.dex，会被抽空 → 壳解密自己的桩 = 鸡生蛋。
+     *   调用点在 Apk.process() 的 extractDexCode 之后、compressDexFiles 之前。
+     *
+     * 不传 = 零行为变更（既有所有组合完全不受影响）。 */
+    public static final String OPTION_EXTRA_DEX_LONG = "extra-dex";
+
     public static final String OPTION_SMALLER = "S";
     public static final String OPTION_SMALLER_LONG = "smaller";
 
