@@ -138,6 +138,12 @@ endif()
 add_compile_definitions(DPT_KL_SEED=0x${DPT_KL_SEED}ULL)
 message("keyladder seed: 0x${DPT_KL_SEED} (per-build, not in source)")
 
+# 把 seed 落到文件，供 Gradle 侧的段锁箱（SoSectionLocker）读 ——
+# 运行期 C 与构建期 Java 必须用同一把 seed，否则派生出的 key 不同。
+# 为什么必须落文件：CMake 的 string(RANDOM) 在 configure 期生成，
+# Gradle 拿不到这个值（进程边界）。
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/keyladder-seed.txt" "${DPT_KL_SEED}")
+
 include_directories(./ )
 include_directories(./common)
 

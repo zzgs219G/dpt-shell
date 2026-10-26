@@ -705,15 +705,50 @@ public abstract class AndroidPackage {
     }
 
     public void encryptSoFiles(String packageOutDir, byte[] rc4Key){
+        // rc4Key 保留仅为签名兼容（Apk/Aab 两个调用点 + 测试不受影响）。
+        // 新链路不用它，故不再有"未使用"告警。
         File obfDir = new File(getOutAssetsDir(packageOutDir).getAbsolutePath() + File.separator, Const.KEY_LIBS_DIR_NAME);
         File[] soAbiDirs = obfDir.listFiles();
         if(soAbiDirs == null) {
             return;
         }
 
+        /* ── 派生材料：证书 + 包名 + seed（缺一即 fail-fast）────────────
+         *
+         * 原实现用 rc4Key 加密 .bitcode 后，把 key 明文写进 so 的
+         * DPT_UNKNOWN_DATA 符号 —— readelf 找到符号 + dd 读出 16 字节，
+         * 整条加密形同虚设。
+         *
+         * 现在 key 由派生链算出、不落盘：
+         *   key    = HKDF(master, SHA256(certDER), "dpt-sec-v1"+pkg)
+         *   master = SHA256(DPT_KL_SEED || CRC32(.text) || "dpt-kl-v1")
+         *   · certDER 从【输入 APK】提（运行期设备上读的是同一个证书）
+         *   · seed    从 shell-files/keyladder-seed.txt 读（CMake
+         *              configure 时 string(RANDOM) 生成并落文件，
+         *              因为跨进程边界 Gradle 拿不到这个值）
+         *   · CRC32   由 SoSectionLocker 现算（链接后即固定；AGP 的
+         *              strip 只删 .symtab 不动 .text —— 已实测验证）
+         *
+         * 两侧一致性由 KeyLadderTest 的 9 项断言锁定。 */
+        String seed = readKeyladderSeed();
+        String pkg = getPackageName();
+        byte[] certDer = null;
+        try {
+            certDer = com.luoye.dpt.util.KeyLadder.extractFirstCertDer(new File(getFilePath()));
+        } catch (Exception e) {
+            LogUtils.error("派生链：从 APK 提证书失败: %s", e.getMessage());
+        }
+        if (certDer == null) {
+            throw new IllegalStateException(
+                    "派生链：无法从输入 APK 提取证书 DER，拒绝退回明文 key 方案。");
+        }
+        if (pkg == null || pkg.isEmpty()) {
+            throw new IllegalStateException("派生链：包名为空");
+        }
+
         for (File soAbiDir : soAbiDirs) {
             File[] soFiles = soAbiDir.listFiles();
-            if(soFiles == null) {
+            if (soFiles == null) {
                 continue;
             }
 
@@ -721,11 +756,44 @@ public abstract class AndroidPackage {
                 if(!soFile.getAbsolutePath().endsWith(".so")) {
                     continue;
                 }
-                encryptSoFile(soFile, rc4Key);
-                writeSoFileCryptKey(soFile, rc4Key);
+                // 返回 false = 无 .bitcode 段（老版本 so），属正常不 fail。
+                // IOException 就地转 IllegalStateException：锁箱失败
+                // 必须 fail-fast，不能让 so 以明文/半加密状态进包。
+                boolean locked;
+                try {
+                    locked = com.luoye.dpt.util.SoSectionLocker.lockBitcode(
+                            soFile, seed, certDer, pkg);
+                } catch (java.io.IOException e) {
+                    throw new IllegalStateException(
+                            "派生链：锁箱 " + soFile.getName() + " 失败", e);
+                }
+                if (locked) {
+                    LogUtils.info("派生链加密完成: %s", soFile.getName());
+                }
             }
         }
 
+    }
+
+    /** 读 CMake 落盘的 keyladder seed（16 位 hex，缺则 fail-fast）。 */
+    private String readKeyladderSeed() {
+        File seedFile = new File(FileUtils.getExecutablePath(),
+                "shell-files" + File.separator + "keyladder-seed.txt");
+        if (!seedFile.isFile()) {
+            throw new IllegalStateException(
+                    "派生链：找不到 keyladder-seed.txt（" + seedFile.getAbsolutePath() + "）。"
+                    + "CMake configure 会生成它；缺失说明 shell-files 与 dpt.jar 不同版本。");
+        }
+        try {
+            byte[] b = java.nio.file.Files.readAllBytes(seedFile.toPath());
+            String s = new String(b, java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (!s.matches("[0-9a-fA-F]{16}")) {
+                throw new IllegalStateException("派生链：keyladder-seed.txt 内容非法: " + s);
+            }
+            return s.toLowerCase(java.util.Locale.US);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("派生链：读 keyladder-seed.txt 失败", e);
+        }
     }
 
     private void encryptSoFile(File soFile, byte[] rc4Key) {
