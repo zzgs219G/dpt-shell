@@ -23,6 +23,11 @@ set(DPT_NATIVE_SOURCE
         reflect/android_app_Application.cpp
         reflect/android_app_LoadedApk.cpp
         reflect/android_app_ContextImpl.cpp
+        /* 段加密密钥派生链（自研，2026-10-26）：
+         * dpt_keyladder.c 提供 HKDF 派生；dpt_cert.c 从已安装 APK 提证书 DER。
+         * 两者共同支撑"key 不落盘、运行期从证书派生"的段加密。 */
+        dpt_keyladder.c
+        dpt_cert.c
         )
 
 set(MZ_LZMA OFF CACHE BOOL "" FORCE)
@@ -108,6 +113,30 @@ message("dpt build key: ${DPT_BUILD_KEY}")
 add_compile_definitions(JNI_BRIDGE_NAME="${JNI_BRIDGE_NAME}")
 add_compile_definitions(SO_NAME="lib${SO_NAME}.so")
 add_compile_definitions(DPT_BUILD_KEY="${DPT_BUILD_KEY}")
+
+# ── 段加密派生链的编译期种子（2026-10-26）─────────────────────────
+# master = SHA256(DPT_KL_SEED || CRC32(.text) || 版本串)
+#   · 每个 dpt-shell 版本应不同 → string(RANDOM) 生成
+#   · 为什么不写死常量：写死 = 全版本共享一把锁，且源码里查得到
+#   · 为什么必须是 16 位 hex：dpt_keyladder.c 按 0x%016llx 解析
+if(NOT DEFINED DPT_KL_SEED OR DPT_KL_SEED STREQUAL "")
+    # 存进缓存：不缓存的话每次 cmake configure 都重新生成 → 触发全量重编，
+    # 且两次构建的 so 派生链不同（无法对拍）。实测缓存生效（二次 configure 值不变）。
+    string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef _kl_seed_tmp)
+    set(DPT_KL_SEED "${_kl_seed_tmp}" CACHE STRING "keyladder compile seed (16 hex)")
+    unset(_kl_seed_tmp)
+endif()
+# STRIP 必须有：string(RANDOM) 的结果可能带尾随空白，直接喂给
+# MATCHES 会误判为非法（本机实测踩过）。
+string(STRIP "${DPT_KL_SEED}" DPT_KL_SEED)
+if(NOT DPT_KL_SEED MATCHES "^[0-9a-fA-F]{16}$")
+    message(FATAL_ERROR "DPT_KL_SEED 必须是 16 位十六进制字符串，当前: ${DPT_KL_SEED}")
+endif()
+if(NOT DPT_KL_SEED MATCHES "^[0-9a-fA-F]{16}$")
+    message(FATAL_ERROR "DPT_KL_SEED 必须是 16 位十六进制字符串，当前: ${DPT_KL_SEED}")
+endif()
+add_compile_definitions(DPT_KL_SEED=0x${DPT_KL_SEED}ULL)
+message("keyladder seed: 0x${DPT_KL_SEED} (per-build, not in source)")
 
 include_directories(./ )
 include_directories(./common)
