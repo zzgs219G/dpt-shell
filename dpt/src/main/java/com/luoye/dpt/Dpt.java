@@ -112,6 +112,7 @@ public class Dpt {
         options.addOption(new Option(Const.OPTION_OUTPUT_PATH, Const.OPTION_OUTPUT_PATH_LONG, true, "Output directory for protected package."));
         options.addOption(new Option(Const.OPTION_DO_NOT_PROTECT_CLASSES_RULES, Const.OPTION_DO_NOT_PROTECT_CLASSES_RULES_LONG, true, "Rules file for class names that will not be protected.\n"));
         options.addOption(new Option(Const.OPTION_KEEP_CLASSES, Const.OPTION_KEEP_CLASSES_LONG, false, "Keeping some classes in the package can improve the app's startup speed to a certain extent, but it is not supported by some application packages.\n"));
+        options.addOption(new Option(null, Const.OPTION_STUB_SEED_LONG, true, "Key-stream seed (16 hex chars) for the string-decryption stub. Written into the shell config; the stub reads it at runtime via JniBridge.gseed().\n"));
         options.addOption(new Option(null, Const.OPTION_EXTRA_DEX_LONG, true, "Merge an extra dex file into the shell dex (classes.dex). Used to place classes that must stay outside the extracted business dexes, e.g. the string-decryption stub.\n"));
         options.addOption(new Option(Const.OPTION_SMALLER, Const.OPTION_SMALLER_LONG, false, "Write a uniform 0x000e (return-void) filler into extracted method bodies so the packed dex recompresses well (smaller APK). Weaker filler obfuscation than the default random filler.\n"));
         options.addOption(new Option(Const.OPTION_PROTECT_CONFIG, Const.OPTION_PROTECT_CONFIG_LONG, true, "Protect config file.\n"));
@@ -188,6 +189,7 @@ public class Dpt {
                         .useInmemoryDex(commandLine.hasOption(Const.OPTION_USE_INMEMORY_DEX_LONG))
                         .plain(commandLine.hasOption(Const.OPTION_PLAIN_LONG))
                         .extraDexPath(commandLine.getOptionValue(Const.OPTION_EXTRA_DEX_LONG))
+                        .stubSeed(commandLine.getOptionValue(Const.OPTION_STUB_SEED_LONG))
                         .build();
             }
             else if(filePath.endsWith(".aab")) {
@@ -211,6 +213,7 @@ public class Dpt {
                         .riskCheckFlags(riskCheckFlags)
                         .useInmemoryDex(commandLine.hasOption(Const.OPTION_USE_INMEMORY_DEX_LONG))
                         .extraDexPath(commandLine.getOptionValue(Const.OPTION_EXTRA_DEX_LONG))
+                        .stubSeed(commandLine.getOptionValue(Const.OPTION_STUB_SEED_LONG))
                         .build();
             }
             else {

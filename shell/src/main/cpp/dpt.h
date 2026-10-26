@@ -57,6 +57,22 @@ struct ShellConfig {
     // InMemoryDexClassLoader instead of writing the zip to code_cache. Off by
     // default (on-disk is the default path).
     bool use_inmemory_dex = false;
+    /* 字符串解密桩的密钥流种子（64 位）。
+     *
+     * 提供方：packer 联动时由 encrypt-strings.py 每包随机生成，
+     *        经 dpt -c 配置写入 shell config，运行期由 JniBridge.gseed() 返回。
+     * 消费方：stringenc 注入的桩类 <clinit> —— SEED 字段不再有字面量初值，
+     *        只在运行期从本值取。
+     *
+     * 为什么放在壳里（而不是留在 dex 里当常量）：
+     *   桩类在联动时会被合并进【壳 dex】（dpt --extra-dex），4 个算法方法
+     *   还会被 native 化进 libnc.so。此时若 SEED 仍是 dex 里的字面量，
+     *   脱壳者读壳 dex 就能拿到密钥，前面两步全白做。
+     *   从这里取 = 删掉壳（assets/xixin 下的 so 与壳 dex）就拿不到 SEED，
+     *   App 直接崩 —— 这才是"必须带着壳运行"的联动。
+     *
+     * 0 = 未启用联动（stringenc 本体直用字面量，行为与改动前一致）。 */
+    uint64_t stub_seed = 0;
 };
 
 // Decided once in read_shell_config: true when the protected dexes are loaded

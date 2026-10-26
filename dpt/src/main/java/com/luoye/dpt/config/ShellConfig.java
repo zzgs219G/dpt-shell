@@ -42,6 +42,13 @@ public class ShellConfig {
     @JSONField(name = "use_inmemory_dex")
     private boolean useInmemoryDex;
 
+    /* 字符串解密桩的密钥流种子（64 位 hex，packer 联动用）。
+     * 由 encrypt-strings.py 每包随机生成，经 packer.sh --stub-seed 传入。
+     * 写进 assets/xixin_config，运行期由 JniBridge.gseed() 返回给桩类。
+     * 空 = 未启用联动。 */
+    @JSONField(name = "stub_seed")
+    private String stubSeed;
+
     private ShellConfig() {
     }
 
@@ -116,6 +123,7 @@ public class ShellConfig {
         this.appSignSha256 = shellConfig.getAppSignSha256();
         this.riskCheckFlags = shellConfig.getRiskCheckFlags();
         this.useInmemoryDex = shellConfig.isUseInmemoryDex();
+        this.stubSeed = shellConfig.getStubSeed();
     }
 
     public String getSlashShellPackageName() {
@@ -187,6 +195,14 @@ public class ShellConfig {
         this.riskCheckFlags = riskCheckFlags;
     }
 
+    public String getStubSeed() {
+        return stubSeed;
+    }
+
+    public void setStubSeed(String stubSeed) {
+        this.stubSeed = stubSeed;
+    }
+
     public boolean isUseInmemoryDex() {
         return useInmemoryDex;
     }
@@ -219,6 +235,9 @@ public class ShellConfig {
         jsonObject.put("junk_cls_name", getJunkClassName());
         jsonObject.put("risk_check_flags", getRiskCheckFlags());
         jsonObject.put("use_inmemory_dex", isUseInmemoryDex());
+        if (!StringUtils.isBlank(getStubSeed())) {
+            jsonObject.put("stub_seed", getStubSeed());
+        }
         return jsonObject.toString();
     }
 

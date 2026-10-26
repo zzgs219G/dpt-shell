@@ -41,6 +41,9 @@ ShellConfig g_shell_config;
 // back to the on-disk path.
 bool g_use_in_memory_dex = false;
 
+/* 前向声明：gseed 的实现放在文件后部（配置读取之后），此处先声明。 */
+DPT_ENCRYPT jlong get_stub_seed_export(JNIEnv *env, jclass);
+
 static JNINativeMethod gMethods[] = {
         {"craoc", "(Ljava/lang/String;)V",                               (void *) callRealApplicationOnCreate},
         {"ia",    "()V", (void *) init_app},
@@ -51,7 +54,15 @@ static JNINativeMethod gMethods[] = {
         {"cbde",   "(Ljava/lang/ClassLoader;)V",  (void *) combineDexElements},
         {"rde",   "(Ljava/lang/ClassLoader;Ljava/lang/String;)V",        (void *) removeDexElements},
         {"ra", "(Ljava/lang/String;)Ljava/lang/Object;",                               (void *) replaceApplication},
-        {"clinit", "()V",                               (void *) clinit}
+        {"clinit", "()V",                               (void *) clinit},
+        /* gseed：返回字符串解密桩的密钥流种子（packer 联动用）。
+         *
+         * 谁用：stringenc 注入的桩类，其 <clinit> 里 `SEED = ...->gseed()`。
+         * 为什么由壳提供：桩在联动时已合并进壳 dex、4 个算法方法 native 化进
+         *   libnc.so；此时 SEED 若仍是 dex 字面量，脱壳者读壳 dex 就拿到密钥，
+         *   前两步白做。从这里取 = 删壳即拿不到，App 崩 —— 联动才成立。
+         * 返回 0 = 未启用联动（或配置里没写 stub_seed）。 */
+        {"gseed", "()J",                                 (void *) get_stub_seed_export}
 };
 
 DPT_ENCRYPT jobjectArray makePathElements(JNIEnv* env,const char *pathChs) {
@@ -337,6 +348,11 @@ int getRandom(int l, int r) {
     static std::mt19937 gen(std::random_device{}());
     std::uniform_int_distribution<> dist(l, r);
     return dist(gen);
+}
+
+DPT_ENCRYPT jlong get_stub_seed_export(JNIEnv *env, jclass) {
+    (void) env;
+    return (jlong) g_shell_config.stub_seed;
 }
 
 DPT_ENCRYPT void clinit(JNIEnv *env, jclass) {
@@ -1017,6 +1033,7 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                     const char *keyJunkClsName = AY_OBFUSCATE("junk_cls_name");
                     const char *keyRiskCheckFlags = AY_OBFUSCATE("risk_check_flags");
                     const char *keyUseInMemoryDex = AY_OBFUSCATE("use_inmemory_dex");
+                    const char *keyStubSeed = AY_OBFUSCATE("stub_seed");
                     g_shell_config.application_name = json::get_string(jsonStr, keyAppName, "");
                     g_shell_config.application_component_factory = json::get_string(jsonStr, keyAcfName, "");
                     g_shell_config.jni_class_name = json::get_string(jsonStr, keyJniClsName, "");
@@ -1025,6 +1042,28 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
                     g_shell_config.junk_class_name = json::get_string(jsonStr, keyJunkClsName, "");
                     g_shell_config.risk_check_flags = json::get_uint(jsonStr, keyRiskCheckFlags, 0);
                     g_shell_config.use_inmemory_dex = json::get_bool(jsonStr, keyUseInMemoryDex, false);
+                    /* stub_seed：64 位种子，用 16 进制字符串传（dpt_json 的
+                     * get_uint 只到 32 位，拆高低位两个键既绕又难校验）。
+                     * 空串 = 未启用联动（桩自己用字面量，行为与改动前一致）。 */
+                    {
+                        std::string hex = json::get_string(jsonStr, keyStubSeed, "");
+                        g_shell_config.stub_seed = 0;
+                        if (hex.size() == 16) {
+                            bool ok = true;
+                            uint64_t v = 0;
+                            for (char c : hex) {
+                                int d;
+                                if (c >= '0' && c <= '9') d = c - '0';
+                                else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                                else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                                else { ok = false; break; }
+                                v = (v << 4) | (uint64_t) d;
+                            }
+                            if (ok) g_shell_config.stub_seed = v;
+                        } else if (!hex.empty()) {
+                            ELOG("stub_seed 形态非法（需 16 位 hex）: %s", hex.c_str());
+                        }
+                    }
 
                     DLOGD("application_name = %s", g_shell_config.application_name.c_str());
                     DLOGD("application_component_factory = %s", g_shell_config.application_component_factory.c_str());

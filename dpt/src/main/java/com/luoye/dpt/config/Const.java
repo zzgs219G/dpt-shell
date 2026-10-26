@@ -53,6 +53,11 @@ public class Const {
      * 不传 = 零行为变更（既有所有组合完全不受影响）。 */
     public static final String OPTION_EXTRA_DEX_LONG = "extra-dex";
 
+    /* --stub-seed <16位hex>：字符串解密桩的密钥流种子（packer 联动用）。
+     * 由 encrypt-strings.py 每包随机生成，写进 shell config，
+     * 运行期经 JniBridge.gseed() 交给桩类。不传 = 未启用联动。 */
+    public static final String OPTION_STUB_SEED_LONG = "stub-seed";
+
     public static final String OPTION_SMALLER = "S";
     public static final String OPTION_SMALLER_LONG = "smaller";
 

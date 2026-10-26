@@ -73,6 +73,8 @@ public abstract class AndroidPackage {
         public boolean plain = false;
         /* --extra-dex：要合并进壳 dex 的外部 dex（可为 null = 不合并） */
         public String extraDexPath = null;
+        /* --stub-seed：字符串桩的密钥流种子（16 位 hex；null = 未启用联动） */
+        public String stubSeed = null;
 
         public Builder filePath(String path) {
             this.filePath = path;
@@ -129,6 +131,11 @@ public abstract class AndroidPackage {
             return this;
         }
 
+        public Builder stubSeed(String stubSeed) {
+            this.stubSeed = stubSeed;
+            return this;
+        }
+
         public Builder debuggable(boolean debuggable) {
             this.debuggable = debuggable;
             return this;
@@ -180,6 +187,8 @@ public abstract class AndroidPackage {
     private boolean plain = false;
     /* --extra-dex：合并进壳 dex 的外部 dex 路径（null = 不合并，零行为变更） */
     private String extraDexPath = null;
+    /* --stub-seed：字符串桩密钥流种子（16 位 hex；null = 未启用联动） */
+    private String stubSeed = null;
 
     public AndroidPackage(Builder builder) {
         setFilePath(builder.filePath);
@@ -199,6 +208,7 @@ public abstract class AndroidPackage {
         setUseInmemoryDex(builder.useInmemoryDex);
         setPlain(builder.plain);
         setExtraDexPath(builder.extraDexPath);
+        setStubSeed(builder.stubSeed);
     }
 
     /**
@@ -579,6 +589,14 @@ public abstract class AndroidPackage {
 
     public String getExtraDexPath() {
         return extraDexPath;
+    }
+
+    public String getStubSeed() {
+        return stubSeed;
+    }
+
+    public void setStubSeed(String stubSeed) {
+        this.stubSeed = stubSeed;
     }
 
     public void setExtraDexPath(String extraDexPath) {
@@ -1263,6 +1281,20 @@ public abstract class AndroidPackage {
             } else {
                 LogUtils.error("Failed to compute certificate SHA-256, signature verification disabled.");
             }
+        }
+
+        /* --stub-seed：字符串桩的密钥流种子（packer 联动）。
+         * 校验形态（16 位 hex）—— 非法值宁可不写也不要写进去：
+         * 运行期 gseed() 返回 0 时桩会用 0 当种子解全部字符串，
+         * 结果是静默乱码，比直接失败难查得多。 */
+        if (getStubSeed() != null && !getStubSeed().isEmpty()) {
+            String seed = getStubSeed().trim();
+            if (!seed.matches("[0-9a-fA-F]{16}")) {
+                throw new IllegalArgumentException(
+                        "--stub-seed 必须是 16 位十六进制字符串，收到: " + seed);
+            }
+            shellConfig.setStubSeed(seed.toLowerCase(Locale.US));
+            LogUtils.info("Stub seed (for stringenc link): " + seed);
         }
 
         JunkCodeGenerator.generateJunkCodeDex(new File(getJunkCodeDexPath()));
