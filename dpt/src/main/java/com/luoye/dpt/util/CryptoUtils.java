@@ -20,6 +20,12 @@ public class CryptoUtils {
     public static final String RC4Transform = "RC4";
     private static final String HMAC_SHA256 = "HmacSHA256";
 
+    /** deflateRaw 允许的连续 {@code deflate()==0} 次数上限。
+     *  Deflater 的契约允许返回 0（应据此检查 needsInput()），不是死锁；
+     *  只有在连续多次毫无进展时才判定为真停滞（旧实现把单次 0 当异常，
+     *  在真实包上误杀过打包流程，见 deflateRaw 注释）。 */
+    private static final int DEFLATE_MAX_ZERO_STREAK = 8;
+
     public static byte[] rc4Crypt(byte[] key, byte[] in) {
         try {
             Cipher cipher = Cipher.getInstance(RC4Transform);
@@ -170,20 +176,48 @@ public class CryptoUtils {
         if (in == null || in.length == 0) {
             throw new IllegalArgumentException("deflate input is empty");
         }
+        // ⚠️ 不要用 "deflate() == 0 ⇒ 死锁" 这种判定。
+        //
+        // Deflater.deflate() 的契约允许返回 0（javadoc：返回 0 时应检查
+        // needsInput() 以判断是否需要更多输入），它不等于卡死。
+        // 旧实现把 0 一律当异常抛出，于是形成一颗"由输入数据形状触发的雷"：
+        // apk-protect-action run 40326879912 在真实包上命中
+        //   IllegalStateException: deflater made no progress
+        // 导致整个加壳失败；而同样代码在其它模块组合下一直是绿的
+        // （该抛错自 v5 载荷（03a9889）就存在，与 keyladder 改动无关）。
+        //
+        // 现在的处理：
+        //   · n > 0        → 正常写出，清零连续 0 计数
+        //   · n == 0       → 允许，但计入连续 0 计数；累计到
+        //                    DEFLATE_MAX_ZERO_STREAK 仍无进展才判定真停滞，
+        //                    并带上 needsInput()/finished()/累计量现场，便于归因
+        //   · 每轮都重新检查 finished()，保证一定会退出（不会死循环）
+        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, in.length / 2));
         Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
         try {
             deflater.setInput(in);
             deflater.finish();
-            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, in.length / 2));
+
             byte[] buf = new byte[8192];
+            int zeroStreak = 0;
             while (!deflater.finished()) {
                 int n = deflater.deflate(buf);
-                if (n == 0) {
-                    // Should not happen with finish() set and room in buf; guard
-                    // against spinning forever on a broken deflater anyway.
-                    throw new IllegalStateException("deflater made no progress");
+                if (n > 0) {
+                    out.write(buf, 0, n);
+                    zeroStreak = 0;
+                    continue;
                 }
-                out.write(buf, 0, n);
+                // n == 0：可能是合法的"需要更多输入/正在缓冲"，先容忍。
+                if (++zeroStreak >= DEFLATE_MAX_ZERO_STREAK) {
+                    throw new IllegalStateException(
+                            "deflater stalled: " + zeroStreak + " consecutive deflate()==0"
+                                    + " (input=" + in.length + "B"
+                                    + ", written=" + out.size() + "B"
+                                    + ", needsInput=" + deflater.needsInput()
+                                    + ", finished=" + deflater.finished()
+                                    + ", bytesRead=" + deflater.getBytesRead() + "B"
+                                    + ", bytesWritten=" + deflater.getBytesWritten() + "B)");
+                }
             }
             return out.toByteArray();
         } finally {

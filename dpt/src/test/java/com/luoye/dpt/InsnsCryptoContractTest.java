@@ -138,4 +138,48 @@ public class InsnsCryptoContractTest {
         Assert.assertTrue("期望 64KB 指令样数据压到一半以下，实际 " + deflated.length,
                 deflated.length < data.length / 2);
     }
+
+    /**
+     * 回归：超大单块 + 高重复内容必须能压完。
+     *
+     * <p>CI 实测（apk-protect-action run 40326879912）旧实现在真实包上抛
+     * {@code IllegalStateException: deflater made no progress} —— 它把
+     * {@code deflate()} 返回 0 一律当成死锁，而 Deflater 允许返回 0（应查
+     * {@code needsInput()}）。v5 的单块上限是 {@code MULTI_DEX_CODE_BLOCK_MAX_RAW_SIZE}
+     * （16MB），经过 dex2c/stringenc 的包完全可能产出远超 64KB 目标的块，
+     * 所以这里用大于 {@code MULTI_DEX_CODE_BLOCK_TARGET_SIZE} 的高重复数据钉住。
+     *
+     * <p>同时校验 raw deflate 的 round-trip：格式必须仍能被
+     * {@code Inflater(true)} 解回（native 侧是 zlib windowBits=-15）。
+     */
+    @Test
+    public void deflateRaw_handlesOversizedHighlyCompressibleBlock() {
+        int len = 4 * 1024 * 1024;   // 4MB，远大于 64KB 目标块
+        byte[] data = new byte[len];
+        for (int i = 0; i < len; i++) {
+            data[i] = (byte) (i & 0xFF);   // 高重复：每个周期完全一致
+        }
+        byte[] deflated = CryptoUtils.deflateRaw(data);
+        Assert.assertNotNull(deflated);
+        Assert.assertTrue("高重复数据必须显著压缩，实际 " + deflated.length,
+                deflated.length < len / 100);
+        byte[] inflated = CryptoUtils.inflateRaw(deflated, len);
+        Assert.assertNotNull("raw deflate 必须能被 Inflater(true) 解回", inflated);
+        Assert.assertArrayEquals(data, inflated);
+    }
+
+    /** 回归：块边界附近（64KB±1）输入也要逐字节 round-trip。 */
+    @Test
+    public void deflateRaw_roundTripsAroundChunkBoundary() {
+        for (int len : new int[]{65535, 65536, 65537, 131072, 131073}) {
+            byte[] data = new byte[len];
+            for (int i = 0; i < len; i++) {
+                data[i] = (byte) ((i * 31) ^ (i >>> 5));
+            }
+            byte[] deflated = CryptoUtils.deflateRaw(data);
+            byte[] inflated = CryptoUtils.inflateRaw(deflated, len);
+            Assert.assertNotNull("len=" + len + " 必须能解回", inflated);
+            Assert.assertArrayEquals("len=" + len + " 必须逐字节一致", data, inflated);
+        }
+    }
 }
