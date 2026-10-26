@@ -21,9 +21,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "mbedtls/sha256.h"
 #include "mbedtls/hkdf.h"
+#include "dpt_cert.h"
 
 /* 编译期随机种子：由构建脚本注入，每个 dpt-shell 版本不同。
  * 默认值是"未注入"的哨兵 —— 生产构建必须由 CMake 传 -DDPT_KL_SEED
@@ -159,7 +162,7 @@ static uint32_t kl_crc32(const uint8_t *buf, size_t len) {
  * so_build_id 来自 .comment 段（链接器写入的构建标识）。取不到就退化为
  * 只用前两项 —— 此时 master 仅绑定"版本 + 代码内容"，仍然比纯常量强。
  */
-static void kl_compute_master(uint8_t out[DPT_KL_MASTER_LEN]) {
+void kl_compute_master(uint8_t out[DPT_KL_MASTER_LEN]) {
     uint8_t seed[8];
     for (int i = 0; i < 8; i++) {
         seed[i] = (uint8_t) (DPT_KL_SEED >> (i * 8));
@@ -237,4 +240,126 @@ int dpt_kl_derive(const uint8_t *cert_der, size_t cert_len,
     int r = dpt_kl_derive_with_master(master, cert_der, cert_len, pkg, pkg_len, out);
     memset(master, 0, sizeof(master));
     return r;
+}
+/* ── 便捷入口：给段解密用的一键派生 ─────────────────────────────────
+ *
+ * 调用方（dpt.cpp 的 decrypt_section）在 init_array 里跑，早于
+ * JNI_OnLoad —— 那时没有 JNIEnv，也还没读 shell config。所以这个函数
+ * 必须自包含：自己找 APK、提证书、读包名。
+ *
+ * so_path 只用于兜底反推 APK 路径（lib/<abi>/xxx.so → base.apk），
+ * 主路径是 /proc/self/maps 里含 base.apk 的行（extractNativeLibs=true
+ * 时 so 被解压到 dataDir，maps 里仍是 APK 映射）。
+ */
+
+/* 从 /proc/self/cmdline 读包名，截到首个 ':' 前。
+ * 为什么截：子进程的进程名带 :remote/:push 后缀，不截则主进程通过而
+ * 子进程全部 fail-closed（apk-protect-action 同款教训）。 */
+static int kl_read_package(char *out, size_t cap) {
+    int fd = open("/proc/self/cmdline", O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, out, (int) cap - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    out[n] = 0;
+    /* cmdline 是 NUL 分隔的 argv，第一段就是进程名/包名 */
+    size_t len = 0;
+    while (len < (size_t) n && out[len] != 0) len++;
+    out[len] = 0;
+    /* 截到首个 ':' */
+    for (size_t i = 0; i < len; i++) {
+        if (out[i] == ':') { out[i] = 0; len = i; break; }
+    }
+    return (len > 0) ? 0 : -1;
+}
+
+/* 定位自身 APK 路径。两条来源（与 apk-protect-action 的 sig_check.c 同思路）：
+ *   ① /proc/self/maps 里含 "base.apk" 的行（ART 会映射 APK）
+ *   ② so 路径反推：.../lib/<abi>/xxx.so → .../base.apk
+ * 注意：libxixin.so 运行期在 dataDir/dpt-libs/<abi>/，不走 ②，所以 ① 是主路径。 */
+static int kl_find_apk(const char *so_path, char *out, size_t cap) {
+    /* ① maps */
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd >= 0) {
+        char buf[4096];
+        ssize_t n;
+        char line[600];
+        size_t ll = 0;
+        while ((n = read(fd, buf, sizeof(buf))) > 0) {
+            for (ssize_t i = 0; i < n; i++) {
+                char c = buf[i];
+                if (c == '\n') {
+                    line[ll] = 0;
+                    ll = 0;
+                    const char *p = strstr(line, "base.apk");
+                    if (p) {
+                        const char *s = strchr(line, '/');
+                        if (s && s <= p) {
+                            size_t l = (size_t) (p - s) + 8;   /* 含 "base.apk" */
+                            if (l < cap) {
+                                memcpy(out, s, l);
+                                out[l] = 0;
+                                close(fd);
+                                return 0;
+                            }
+                        }
+                    }
+                } else if (ll + 1 < sizeof(line)) {
+                    line[ll++] = c;
+                }
+            }
+        }
+        close(fd);
+    }
+
+    /* ② so 路径反推 */
+    if (so_path) {
+        const char *lib = strstr(so_path, "/lib/");
+        if (lib) {
+            size_t dirlen = (size_t) (lib - so_path);
+            const char *base = "/base.apk";
+            size_t bl = strlen(base);
+            if (dirlen + bl < cap) {
+                memcpy(out, so_path, dirlen);
+                memcpy(out + dirlen, base, bl + 1);
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) {
+    if (out == NULL) return -1;
+
+    char apk[512] = {0};
+    char pkg[256] = {0};
+    if (kl_find_apk(so_path, apk, sizeof(apk)) != 0) return -1;
+    if (kl_read_package(pkg, sizeof(pkg)) != 0) return -1;
+
+    dpt_cert_t cert;
+    int rc = dpt_cert_first_signer(apk, &cert);
+    if (rc != 0) return -1;
+
+    rc = dpt_kl_derive(cert.der, cert.der_len, pkg, strlen(pkg), out);
+    dpt_cert_free(&cert);
+    return rc;
+}
+
+/* 测试专用：给定 seed 与 CRC32 算 master（绕过 __start__text 等链接期符号，
+ * 宿主测试链接不到那些符号）。与 Java 侧 KeyLadder.computeMaster 对应。 */
+void kl_compute_master_for_test(uint8_t out[DPT_KL_MASTER_LEN],
+                                long long seed, unsigned crc) {
+    uint8_t seedb[8];
+    for (int i = 0; i < 8; i++) seedb[i] = (uint8_t) (seed >> (i * 8));
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, seedb, sizeof(seedb));
+    mbedtls_sha256_update(&ctx, (const uint8_t *) &crc, sizeof(crc));
+    const char *bid = "dpt-kl-v1";
+    mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
+    mbedtls_sha256_finish(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    memset(seedb, 0, sizeof(seedb));
 }

@@ -3,6 +3,7 @@
 //
 
 #include "dpt.h"
+#include "dpt_keyladder.h"
 #include "dpt_crypto.h"
 #include "common/dpt_json.h"   // 极简字段提取，取代 external/json/json.hpp（体积优化）
 
@@ -269,20 +270,47 @@ void decrypt_section(const char* section_name, int temp_prot, int target_prot) {
     DLOGD("section name: %s, offset: %p, size: %d", section_name, (uint8_t *)offset, size);
     void *target = (u_char *)info.dli_fbase + offset;
 
+    /* ── RC4 密钥：从证书派生链取，不再读 DPT_UNKNOWN_DATA ──────────
+     *
+     * 原实现：rc4_init(&st, DPT_UNKNOWN_DATA, 16) —— 那把 key 明文躺在
+     * .data 段，readelf 找到符号就能 dd 出来，整条加密形同虚设。
+     *
+     * 现在：k = HKDF(master, SHA256(APK证书DER), "dpt-sec-v1"+pkg)。
+     *   证书从【已安装 APK】读（dpt_cert.c，纯 C，不经过 Java ——
+     *   本函数在 init_array 里跑，早于 JNI_OnLoad，没有 JNIEnv）。
+     *   包名从 /proc/self/cmdline 取（首个 ':' 前截断，子进程带
+     *   :remote 后缀，不截断会让子进程 fail-closed）。
+     *
+     * ⚠️ 失败即 fail-closed：取不到证书/包名就不解密，段保持密文。
+     *    后续调用踩到密文 = SIGILL，app 起不来。这比"静默用一个错 key
+     *    解出乱码"好——乱码会以难以归因的方式崩，密文至少fail在明处。
+     *
+     * ⚠️ 时序：本函数由 init_dpt() 调，那时 APK 已安装、路径可读。
+     *    但 read_shell_config()（JNI_OnLoad 里）还没跑，所以
+     *    g_shell_config.aes_key 尚不可用 —— 必须自己走派生链。 */
+    uint8_t sec_key[DPT_KL_KEY_LEN];
+    if (dpt_kl_derive_section_key(so_path.c_str(), sec_key) != 0) {
+        ELOG("derive section key failed (%s) — fail-closed, section stays cipher", section_name);
+        abort();
+    }
+
     int ret = dpt_mprotect(target, (void *)((uint8_t *)target + size), temp_prot);
     if(ret == -1) {
+        memset(sec_key, 0, sizeof(sec_key));
         abort();
     }
 
     u_char *bitcode = (u_char *)malloc(size);
     struct rc4_state dec_state;
-    rc4_init(&dec_state, reinterpret_cast<const u_char *>(DPT_UNKNOWN_DATA), 16);
+    rc4_init(&dec_state, sec_key, sizeof(sec_key));
     rc4_crypt(&dec_state, reinterpret_cast<const u_char *>(target),
               reinterpret_cast<u_char *>(bitcode),
               size);
 
     memcpy(target,bitcode,size);
     DPT_FREE(bitcode);
+    /* 用完即擦：key 在内存里多留一刻都是多给攻击者一个 dump 窗口 */
+    memset(sec_key, 0, sizeof(sec_key));
 
     int mprotect_ret = dpt_mprotect(target,(void *)((uint8_t *)target + size),target_prot);
     if(mprotect_ret == -1) {

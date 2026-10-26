@@ -79,6 +79,25 @@ extern "C" {
  *
  * 失败时 out 内容未定义（调用方不要用）。
  */
+/* 便捷入口：给段解密用的一键派生（自包含找 APK/证书/包名）。
+ *
+ * 设计给 init_array 阶段的调用方（那时没有 JNIEnv、也没读 shell config），
+ * 所以本函数自己完成：
+ *   1. 定位自身 APK（/proc/self/maps 找 base.apk，失败则用 so_path 反推）
+ *   2. 提取第一签名者证书 DER（纯 C，不经 Java）
+ *   3. 读包名（/proc/self/cmdline，截到首个 ':' 前）
+ *   4. 走 dpt_kl_derive 派生
+ *
+ * 返回 0 成功，负数为失败（调用方应 fail-closed，不要解密）。
+ */
+/* 测试专用：给定 seed 与 CRC32(.text) 算 master，绕过链接期符号依赖。
+ * 与 Java 侧 KeyLadder.computeMaster(seed, crc) 一一对应，供两侧对拍。 */
+void kl_compute_master_for_test(uint8_t out[DPT_KL_MASTER_LEN],
+                                long long seed, unsigned crc);
+
+int dpt_kl_derive_section_key(const char *so_path,
+                              uint8_t out[DPT_KL_KEY_LEN]);
+
 int dpt_kl_derive(const uint8_t *cert_der, size_t cert_len,
                   const char *pkg, size_t pkg_len,
                   uint8_t out[DPT_KL_KEY_LEN]);

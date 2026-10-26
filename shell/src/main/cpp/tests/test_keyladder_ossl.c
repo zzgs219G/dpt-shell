@@ -81,9 +81,12 @@ int main(void) {
         0x30, 0x82, 0x03, 0x6d, 0x30, 0x82, 0x02, 0x55, 0xa0, 0x03, 0x02,
         0x01, 0x02, 0x02, 0x14, 0x2b, 0x7f, 0x1c, 0x9a, 0x33, 0x77, 0x5c };
     const char *pkg = "com.xixin.box";
-    static const uint8_t master[32] = {
-        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f',
-        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f' };
+    /* master 由 computeMaster(SEED, CRC) 算出，与 Java 侧 KeyLadder
+     * .computeMaster 走同一条路 —— 这样才是真正的两侧对拍。
+     * 之前直接传 ASCII 字符串当 master，与 Java 的 computeMaster 输入不同，
+     * 输出必然不同（测试设计缺陷，不是实现 bug）。 */
+    uint8_t master[DPT_KL_MASTER_LEN];
+    kl_compute_master_for_test(master, 0x0123456789abcdefLL, 0);
     uint8_t a[DPT_KL_KEY_LEN], b[DPT_KL_KEY_LEN], c2[DPT_KL_KEY_LEN];
     int fails = 0;
 
