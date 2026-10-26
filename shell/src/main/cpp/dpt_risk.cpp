@@ -146,18 +146,21 @@ DPT_ENCRYPT NO_INLINE void dpt_die_1() {
 #ifdef DEBUG
     abort();
 #else
-    /* ⚠️ `mov sp,#0` 不合法（立即数不能直接写 sp），必须经通用寄存器中转
-     * ——本机 clang -Wall -Wextra -Werror 实测报
-     *   "expected compatible register or logical immediate"。 */
+    /* ⚠️ 两条实测教训（CI 抓出，本机 arm64 编译不到这两支）：
+     *   1) `mov sp,#0` 不合法（立即数不能直接写 sp），必须经通用寄存器中转。
+     *   2) x86 分支【不能】写 `%%esp` —— `%%` 只在带操作数的 asm 模板里
+     *      才转义成字面 %；本处无操作数，写 `%%` 会被当成寄存器名解析，
+     *      clang 报 "invalid register name"（CI x86 先红）。
+     *      同理 `pop %rbp` 的 %rbp 也必须单个 %。 */
     asm volatile(
 #ifdef __aarch64__
     "mov x9,#0\t\n\tmov sp,x9\t\n\tmov x30,#0\t\n"
 #elif __arm__
     "mov r9,#0\t\n\tmov sp,r9\t\n\tmov lr,#0\t\n"
 #elif __i386__
-    "xor %%esp,%%esp\t\n\tret\t\n"
+    "xor %esp,%esp\t\n\tret\t\n"
 #elif __x86_64__
-    "xor %%rsp,%%rsp\t\n\tpop %rbp\t\n"
+    "xor %rsp,%rsp\t\n\tpop %rbp\t\n"
 #endif
 );
 #endif
