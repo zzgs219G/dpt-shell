@@ -4,6 +4,7 @@
 
 #include "dpt.h"
 #include "dpt_keyladder.h"
+#include "dpt_cert.h"
 #include "dpt_crypto.h"
 #include "common/dpt_json.h"   // 极简字段提取，取代 external/json/json.hpp（体积优化）
 
@@ -1096,9 +1097,15 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             auto decrypted_data = aes_cbc_decrypt(aes_key_buf, 256, iv, indata.data(), entry_size);
             if (decrypted_data.empty()) {
                 ELOG("decrypt shell config failed");
+                memset(aes_key_buf, 0, sizeof(aes_key_buf));
+                memset(iv, 0, sizeof(iv));
                 release_package(package_addr, package_size);
                 return;
             }
+            /* 用完即擦：aes_key 还要留给运行期解密 dex 载荷（g_shell_config.aes_key），
+             * 但栈上这份副本没有保留价值，多留一刻就多一个 dump 窗口。 */
+            memset(aes_key_buf, 0, sizeof(aes_key_buf));
+            memset(iv, 0, sizeof(iv));
 
             {
                 std::string jsonStr = std::string(decrypted_data.begin(), decrypted_data.end());
