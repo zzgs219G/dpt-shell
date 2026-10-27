@@ -1,111 +1,177 @@
-# 真机冒烟验证
+# 开发与测试脚本
+
+本目录放**所有非生产用途的脚本**：真机验证、性能基准。
+生产流水线的脚本不在这里（在 `apk-protect-action` 仓库）。
+
+| 脚本 | 用途 | 需要什么 | 详见 |
+|---|---|---|---|
+| `verify-on-device.sh` | **功能冒烟**：装机→启动→按判据输出 PASS/FAIL，指出崩在哪层 | adb + 一台设备 | [§1](#1-verify-on-devicesh功能冒烟) |
+| `bench-pack.sh` | **打包耗时**基准 | 一个 APK + 完整 `executable/` | [§2](#2-bench-packsh打包耗时) |
+| `bench-runtime.sh` | **启动耗时 / 内存 / 是否落盘**基准 | adb + 一台设备 | [§3](#3-bench-runtime-sh运行时指标) |
+
+三个脚本都不依赖额外工具链（不需要 bc / hyperfine / perf）。
+
+---
+
+## 1. verify-on-device.sh（功能冒烟）
 
 一条命令替代"装机 → 截图 → 逐条翻 logcat"。
 
-## 为什么需要它
-
-本项目 v1.2.3 ~ v1.3.2 共 9 个版本里，**有 5 个是我自己引入或漏改的缺陷**，
-且每个都要经过"改代码 → CI → 打 tag → 人工打包 → 人工装机 → 人工截图"
-才能发现，一轮 20~40 分钟。
-
-这个脚本把最后三步自动化，并**直接告诉你崩在哪一层**。
-
-## 用法
-
 ```bash
-# 1. 设备先连上（Wi-Fi ADB 或 USB）
 adb connect 192.168.1.5:39963
-adb devices          # 确认状态是 device
-
-# 2. 跑验证
-scripts/dev/verify-on-device.sh /path/to/app_signed.apk \
-    --device 192.168.1.5:39963 \
-    --pkg com.xixin.box
+scripts/dev/verify-on-device.sh /path/to/app_signed.apk --device 192.168.1.5:39963
 ```
 
-输出示例（通过）：
+输出：
 
 ```
 ▶ 设备: 2602BRT18C / Android 16 / arm64-v8a
-▶ 安装 简盒_signed_17_41_58_sign.apk
-▶ 启动 com.xixin.box/.MainActivity
-
 ── 判据 ──
   ✅ 派生链：[kl] ... cert_len=666 crc_rc=0 text_crc=0x5ee57564 derive_rc=0
   ✅ 配置链：无错误
   ✅ 载荷链：无 inflate 失败
   ✅ JNI 注册：正常
   ✅ 进程存活：pid=31706
-
-✅ PASS —— 三条链全部正常，进程存活
+✅ PASS
 ```
 
-失败时（示例）：
-
-```
-  ❌ 载荷链失败：materializeBlock() block 12 inflate failed: comp=56269 raw=94408
-  ❌ 进程已退出（崩溃）
-❌ FAIL —— 详见上方判据
-```
-
-## 参数
+### 参数
 
 | 参数 | 说明 |
 |---|---|
-| `<apk>` | 必填，待验证的 APK（已签名版） |
-| `--device <host:port>` | Wi-Fi ADB 地址；不传则用当前唯一的 adb 设备 |
+| `<apk>` | 必填，已签名 APK |
+| `--device <host:port>` | Wi-Fi ADB 地址；不传则用当前唯一设备 |
 | `--pkg <包名>` | 默认 `com.xixin.box` |
 | `--activity <.MainActivity>` | 默认 `.MainActivity` |
 | `--wait <秒>` | 等进程出现的上限，默认 12 |
-| `--expect-dpt-only` | 额外校验壳 dex 里没有 stringenc 痕迹 |
+| `--expect-dpt-only` | 额外校验壳 dex 无 stringenc 痕迹 |
 
-## 退出码
+### 退出码
 
 | 码 | 含义 |
 |---|---|
 | 0 | PASS |
 | 1 | FAIL（崩溃 / 某条链失败） |
-| 2 | 参数或环境错误（adb 缺失、设备未连、APK 不存在） |
+| 2 | 参数或环境错误 |
 
-可直接用于 CI：`verify-on-device.sh ... || exit 1`
-
-## 判据来源
+### 判据来源
 
 来自 [docs/基线-v1.3.2-真机验证.md](../../docs/基线-v1.3.2-真机验证.md) §3：
 
-| 判据 | 含义 | 对应历史事故 |
-|---|---|---|
-| `[kl] ... derive_rc=0` | 派生链成功 | v1.2.3~v1.2.6 全崩在这条 |
-| 无 `config:` 错误 | 配置链成功 | v1.2.8 `java_class == null` |
-| 无 `materializeBlock` 失败 | 载荷链成功 | v1.3.1 inflate failed |
-| 无 `java_class == null` | JNI 注册成功 | v1.2.8 |
-| 进程存活 | 最终判据 | 全部 |
+| 判据 | 对应历史事故 |
+|---|---|
+| `[kl] ... derive_rc=0` | v1.2.3~v1.2.6 全崩在这条 |
+| 无 `config:` 错误 | v1.2.8 `java_class == null` |
+| 无 `materializeBlock` 失败 | v1.3.1 inflate failed |
+| 无 `java_class == null` | v1.2.8 |
+| 进程存活 | 最终判据 |
 
-**为什么用"进程是否存活"而不只看 FATAL**：有些崩溃（如 `abort()` 前的
+**为什么用"进程存活"而不只看 FATAL**：有些崩溃（`abort()` 前的
 `JNI DETECTED ERROR`）不打 `FATAL EXCEPTION`，只看 FATAL 会漏判。
 
-## 该测哪个模块组合
+### 该测哪个模块组合
 
 **两个都要测**，任一失败都算失败：
 
 | 组合 | 目的 |
 |---|---|
-| **只勾 packer（dpt）** | 验证 dpt 自身三条链。**定位最快**——挂了就是 dpt 自己的问题，与联动无关 |
-| **全模块**（sigcheck + dex2c + stringenc + dex2c_stub + envcheck + packer） | 验证联合链路：桩进壳 dex、`gseed`、dex2c 产物与壳协同 |
+| **只勾 packer（dpt）** | 验证 dpt 自身三条链。**定位最快**——挂了就是 dpt 的问题，与联动无关 |
+| **全模块**（sigcheck+dex2c+stringenc+dex2c_stub+envcheck+packer） | 验证联合链路：桩进壳 dex、`gseed`、dex2c 产物与壳协同 |
 
-历史经验：v1.2.6 ~ v1.3.1 的所有缺陷**只勾 dpt 就能复现**，
-"单模块也崩"这句话一次就排除了全部联动嫌疑。
+历史经验：v1.2.6 ~ v1.3.1 的所有缺陷**只勾 dpt 就能复现**。
 
-## 关于"自动化到 CI"（暂未做）
+### 关于 CI 自动化
 
-要让 GitHub Actions 自动跑，**不要用公网隧道暴露 ADB**（等于把真机
-完全控制权交出去）。正确做法是**自托管 runner**：
+**不要用公网隧道暴露 ADB**（cloudflared/ngrok）：ADB 无认证机制，
+暴露 = 交出真机完全控制权。
 
-1. 家里一台机器常开，注册为 GitHub Actions self-hosted runner
-2. 手机与它同局域网，`adb connect 192.168.x.x:5555`
-3. workflow 里 `runs-on: [self-hosted]`，直接跑本脚本
+若将来要做，正确方式是**自托管 runner**：家里一台常开机器注册为
+GitHub Actions self-hosted runner，手机与它同局域网直连，零公网暴露。
+（前提：需要一台常开的电脑。）
 
-这样无需任何公网暴露，且免费。
+**Tailscale** 是可接受的替代（WireGuard 私有 mesh，非公网入口），
+但需配套 ACL 只放行 CI 节点到设备 5555 端口，且用 ephemeral authkey。
 
-判断是否值得做：如果本项目还要迭代 10 个版本以上，值得；
-否则手动跑这一条命令已足够。
+---
+
+## 2. bench-pack.sh（打包耗时）
+
+```bash
+scripts/dev/bench-pack.sh <apk> [runs] [dpt.jar]
+```
+
+例：
+
+```bash
+scripts/dev/bench-pack.sh app.apk
+scripts/dev/bench-pack.sh app.apk 7
+scripts/dev/bench-pack.sh app.apk 5 executable/dpt.jar
+```
+
+`dpt.jar` 默认取 `executable/dpt.jar`，需**完整** `executable/`
+（含 `shell-files/`，用 `./gradlew build` 生成）。
+
+输出中位数 + 波动。首次运行含 JVM 解释执行 + JIT，明显偏慢，
+默认丢弃第 1 次（`BENCH_WARMUP=0` 可关闭）。
+
+**波动警告**：`max - min > 中位数 × 15%` 时打印警告。此时数字不可信，
+先排除环境干扰（充电、后台应用、其他构建任务）。
+
+---
+
+## 3. bench-runtime.sh（运行时指标）
+
+```bash
+scripts/dev/bench-runtime.sh <package.name> [activity]
+```
+
+例：
+
+```bash
+scripts/dev/bench-runtime.sh com.example.app
+scripts/dev/bench-runtime.sh com.example.app com.example.app/.MainActivity
+```
+
+采集四项：
+
+1. **code_cache** —— 首次安装后是否有 `xixin_dexes.zip`（判断落盘还是内存加载）
+2. **冷启动** —— 每次 `am force-stop` 后再启动，取 `TotalTime` 中位数
+3. **热启动** —— 不 force-stop
+4. **内存** —— `dumpsys meminfo` 的 TOTAL PSS
+
+无 adb 或无设备时打印 `skip` 并以 **0 退出**，不阻塞流水线。
+`BENCH_RUNS=20` 可增加冷启动采样次数（默认 10）。
+
+### 为什么冷热启动必须分开
+
+**解密只在类加载时发生。** 热启动 App 已驻留内存，根本不走解密路径——
+测热启动等于什么都没测。冷启动才是解密成本的体现。
+
+---
+
+## 4. 测量纪律（比脚本本身更重要）
+
+1. **基线要先拿到。** 一旦开始改代码，基线就永久失去了。
+   第一件事是测当前 `main` 并填进 [docs/性能基准.md](../../docs/性能基准.md)。
+
+2. **锁定变量。** 同一台设备、同一份 APK（记 hash）、同一 ROM。
+   **系统升级后测得的数字不可与之前比较。**
+
+3. **跨机器数字没有意义。** 只能同机前后对比。
+
+4. **未实测的格子留 `?`，禁止填估算值。**（AGENTS.md §6）
+
+---
+
+## 5. 常见问题
+
+**Q：打包耗时每次差很多怎么办？**
+先看脚本的"波动"行。波动大说明环境不稳，不是 dpt 的问题。
+关掉后台应用、插电、隔几秒再跑。
+
+**Q：`归一化` 那一行怎么算的？**
+`中位数毫秒 ÷ 方法数 × 1000`，即每千方法的毫秒数。
+
+**Q：能不能只测一个方法运行得更快？**
+本套工具**不测单个方法的执行速度**。指令解密只发生在类加载时，
+不是每次方法调用都解密。

@@ -3,11 +3,11 @@
 # 真机运行时基线采集：启动耗时、内存、code_cache 落盘情况。
 #
 # 用法：
-#   tools/benchmark/bench-runtime.sh <package.name> [activity]
+#   scripts/dev/bench-runtime.sh <package.name> [activity]
 #
 # 例：
-#   tools/benchmark/bench-runtime.sh com.example.app
-#   tools/benchmark/bench-runtime.sh com.example.app com.example.app/.MainActivity
+#   scripts/dev/bench-runtime.sh com.example.app
+#   scripts/dev/bench-runtime.sh com.example.app com.example.app/.MainActivity
 #
 # 无设备时打印 skip 并以 0 退出，不阻塞流水线。
 #

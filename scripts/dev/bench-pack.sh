@@ -3,11 +3,11 @@
 # 打包耗时基准：同一份 APK 连续跑 N 次，取中位数。
 #
 # 用法：
-#   tools/benchmark/bench-pack.sh <apk> [runs] [dpt.jar]
+#   scripts/dev/bench-pack.sh <apk> [runs] [dpt.jar]
 #
 # 例：
-#   tools/benchmark/bench-pack.sh app.apk
-#   tools/benchmark/bench-pack.sh app.apk 7 executable/dpt.jar
+#   scripts/dev/bench-pack.sh app.apk
+#   scripts/dev/bench-pack.sh app.apk 7 executable/dpt.jar
 #
 # 只用 date +%s%N 和 awk，不依赖 bc / hyperfine。
 #
