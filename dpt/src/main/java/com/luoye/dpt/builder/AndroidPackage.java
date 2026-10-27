@@ -727,8 +727,8 @@ public abstract class AndroidPackage {
     }
 
     public void encryptSoFiles(String packageOutDir, byte[] rc4Key){
-        // rc4Key 保留仅为签名兼容（Apk/Aab 两个调用点 + 测试不受影响）。
-        // 新链路不用它，故不再有"未使用"告警。
+        // rc4Key 仍被使用：写入 DPT_UNKNOWN_DATA 供运行期派生配置 aes_key/iv
+        // （与 .bitcode 的派生链是两条独立链路，见下方 writeSoFileCryptKey 注释）。
         File obfDir = new File(getOutAssetsDir(packageOutDir).getAbsolutePath() + File.separator, Const.KEY_LIBS_DIR_NAME);
         File[] soAbiDirs = obfDir.listFiles();
         if(soAbiDirs == null) {
@@ -798,6 +798,21 @@ public abstract class AndroidPackage {
                     throw new IllegalStateException(
                             "派生链：锁箱 " + soFile.getName() + " 失败", e);
                 }
+                // ⚠️ 必须继续写 DPT_UNKNOWN_DATA，即使 .bitcode 已改走派生链。
+                //
+                // 这个符号不只给 .bitcode 用。运行期 read_shell_config() 有两处
+                // 依赖它的内容（dpt.cpp）：
+                //   · aes_key = HMAC(DPT_UNKNOWN_DATA, 16, pkg + "_" + buildKey)
+                //   · iv      = DPT_UNKNOWN_DATA[0..16]，再改 iv[3]/iv[9]
+                // 打包侧对应的是 encKey（KeyUtils.generateKey 生成，iv 同源）。
+                // 上一版误以为"改走派生链后这个符号就没用了"而删掉本调用，
+                // 结果：DPT_UNKNOWN_DATA 停在哨兵 "1234567890abcdef"
+                //   → 配置解密失败 → jni_cls_name 为空
+                //   → FindClass("") 返回 null → RegisterNatives(null) 
+                //   → ART "JNI DETECTED ERROR: java_class == null" → abort
+                // （2026-10-27 真机实证：.bitcode 已能解开，却在 JNI_OnLoad 崩）。
+                writeSoFileCryptKey(soFile, rc4Key);
+
                 if (locked) {
                     LogUtils.info("派生链加密完成: %s", soFile.getName());
                 }

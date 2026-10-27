@@ -480,14 +480,32 @@ DPT_ENCRYPT jobject replaceApplicationOnLoadedApk(JNIEnv *env, jclass __unused, 
 
 
 DPT_ENCRYPT static bool registerNativeMethods(JNIEnv *env) {
-    jclass JniBridgeClass = env->FindClass(g_shell_config.jni_class_name.c_str());
-    if(JniBridgeClass == nullptr) {
-        DLOGF("cannot find class: %s!", g_shell_config.jni_class_name.c_str());
+    const char *cls = g_shell_config.jni_class_name.c_str();
+
+    /* ⚠️ 查找失败必须立刻返回。
+     * 原实现只 DLOGF 一句就继续，把 nullptr 传给 RegisterNatives ——
+     * ART 直接 "JNI DETECTED ERROR IN APPLICATION: java_class == null"
+     * 并 abort，栈顶是 JNI_OnLoad，完全看不出真正的失败原因
+     * （2026-10-27 真机实证）。带诊断信息的正常失败比 ART 的断言好查得多。 */
+    if (g_shell_config.jni_class_name.empty()) {
+        ELOG("registerNativeMethods: jni_class_name is EMPTY (shell config not read?)");
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_FALSE;
     }
-    if (env->RegisterNatives(JniBridgeClass, gMethods, sizeof(gMethods) / sizeof(gMethods[0])) ==
-        0) {
+
+    jclass JniBridgeClass = env->FindClass(cls);
+    if (JniBridgeClass == nullptr) {
+        ELOG("registerNativeMethods: FindClass(%s) returned null", cls);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return JNI_FALSE;
+    }
+
+    if (env->RegisterNatives(JniBridgeClass, gMethods,
+                             sizeof(gMethods) / sizeof(gMethods[0])) == 0) {
         return JNI_TRUE;
     }
+    ELOG("registerNativeMethods: RegisterNatives(%s) failed", cls);
+    if (env->ExceptionCheck()) env->ExceptionClear();
     return JNI_FALSE;
 }
 
