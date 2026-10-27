@@ -33,11 +33,23 @@
 
 /* ⚠️ 不能用 common/dpt_log.h：那个头是 C++ 专用（含 <cstring> 和 inline
  * 函数），本文件是纯 C，include 会编译失败。这里只订一个最小的错误日志宏，
- * 与 ELOG 语义一致（release 也保留），tag 与全局一致便于 logcat 过滤。 */
+ * 与 ELOG 语义一致（release 也保留），tag 与全局一致便于 logcat 过滤。
+ *
+ * __ANDROID__ 守卫：宿主对拍测试（tests/test_keyladder_ossl.c，用 OpenSSL
+ * 在 PC/Termux 上跑）没有 android/log.h 与 __android_log_print，不守卫会
+ * 链接失败 —— 而宿主对拍正是本派生链唯一的可执行验证手段，不能因为加了
+ * 日志就把这条路堵死。 */
+/* 宿主对拍（tests/test_keyladder_ossl.c）编译时用 -DDPT_KL_HOST_TEST 显式
+ * 关掉日志：Termux 上 clang 也会定义 __ANDROID__ / __ANDROID_API__，靠环境
+ * 宏判断不可靠（实测踩过），所以用测试自己声明的开关。 */
+#ifdef DPT_KL_HOST_TEST
+#define KL_ELOG(...) do { (void) 0; } while (0)
+#else
 #include <android/log.h>
 #define KL_TAG "dpt_native"
 #define KL_ELOG(...) \
     __android_log_print(ANDROID_LOG_ERROR, KL_TAG, "[keyladder] " __VA_ARGS__)
+#endif
 
 /* 编译期随机种子：由构建脚本注入，每个 dpt-shell 版本不同。
  * 默认值是"未注入"的哨兵 —— 生产构建必须由 CMake 传 -DDPT_KL_SEED
@@ -462,11 +474,64 @@ static int kl_read_package(char *out, size_t cap) {
     return (len > 0) ? 0 : -1;
 }
 
-/* 定位自身 APK 路径。两条来源（与 apk-protect-action 的 sig_check.c 同思路）：
+/* 定位自身 APK 路径。三条来源，按可靠性排序：
+ *
+ *   ⓪  Java 写的提示文件：<so 所在目录>/apk-path
+ *      —— 这是主路径。原因见下（2026-10-27 真机实测）。
  *   ① /proc/self/maps 里含 "base.apk" 的行（ART 会映射 APK）
  *   ② so 路径反推：.../lib/<abi>/xxx.so → .../base.apk
- * 注意：libxixin.so 运行期在 dataDir/dpt-libs/<abi>/，不走 ②，所以 ① 是主路径。 */
+ *
+ * ⚠️ 为什么 ⓪ 必须存在（真机日志实证）：
+ *   `.bitcode` 解密跑在 so 的 init_array，那时：
+ *     · ① maps 里还没有 base.apk（APK 尚未被 ART 映射）—— 实测
+ *       "[keyladder] find apk failed"，随后 fail-closed abort；
+ *     · ② 壳 so 在 dataDir/dpt-libs/<abi>/，路径里没有 "/lib/"，反推不到。
+ *   而 Java 侧 FileUtils.unzipLibs() 的入参就是 sourceDir（APK 绝对路径），
+ *   由它把路径写到 so 同目录最可靠，且零 JNI、零时序依赖。
+ */
+#define KL_APK_HINT_NAME "apk-path"
+
+/* 从 so 所在目录读 apk-path 提示文件。返回 0 成功。 */
+static int kl_read_apk_hint(const char *so_path, char *out, size_t cap) {
+    if (so_path == NULL || out == NULL || cap == 0) return -1;
+
+    const char *slash = strrchr(so_path, '/');
+    if (slash == NULL) return -1;
+    size_t dirlen = (size_t) (slash - so_path);
+    if (dirlen + 1 + sizeof(KL_APK_HINT_NAME) >= cap) return -1;
+
+    char hint_path[512];
+    if (dirlen + 1 + sizeof(KL_APK_HINT_NAME) > sizeof(hint_path)) return -1;
+    memcpy(hint_path, so_path, dirlen);
+    hint_path[dirlen] = '/';
+    memcpy(hint_path + dirlen + 1, KL_APK_HINT_NAME, sizeof(KL_APK_HINT_NAME));
+
+    int fd = open(hint_path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, out, (int) cap - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    out[n] = 0;
+
+    /* 去掉尾随换行/空白 */
+    while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ')) {
+        out[--n] = 0;
+    }
+    if (n == 0 || out[0] != '/') return -1;
+
+    /* 存在性校验：文件被删/路径失效时不要拿它去开证书 */
+    int probe = open(out, O_RDONLY);
+    if (probe < 0) return -1;
+    close(probe);
+    return 0;
+}
+
 static int kl_find_apk(const char *so_path, char *out, size_t cap) {
+    /* ⓪ Java 写的提示文件（主路径，见函数上方说明） */
+    if (kl_read_apk_hint(so_path, out, cap) == 0) {
+        return 0;
+    }
+
     /* ① maps */
     int fd = open("/proc/self/maps", O_RDONLY);
     if (fd >= 0) {
@@ -546,6 +611,9 @@ int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) 
      * 这里只打印，不参与派生 —— 保持一致（同一路径同一文件）。 */
     uint32_t text_crc = 0;
     int crc_rc = kl_text_crc_from_so(so_path, &text_crc);
+    /* 宿主对拍会关掉 KL_ELOG，此时这些量没人用 —— 显式消警。 */
+    (void) crc_rc;
+    (void) text_crc;
 
     rc = dpt_kl_derive(cert.der, cert.der_len, pkg, strlen(pkg), so_path, out);
     KL_ELOG("apk=%s pkg=%s cert_len=%zu crc_rc=%d text_crc=0x%08x derive_rc=%d",

@@ -70,7 +70,18 @@ static int mbedtls_hkdf(const void *md, const unsigned char *salt, size_t sl,
 }
 
 /* 直接吃被测 .c：静态函数可见，不用维护 impl 头。
- * mbedtls 的 include 在上面已被同名符号顶替，这里屏蔽掉。 */
+ * mbedtls 的 include 在上面已被同名符号顶替，这里屏蔽掉。
+ *
+ * ⚠️ 必须带 -DDPT_KL_HOST_TEST 编译：dpt_keyladder.c 的错误日志走
+ * __android_log_print，宿主没有这个符号会链接失败。不要靠 __ANDROID__
+ * 判断 —— Termux 上的 clang 也会定义它（实测踩过）。
+ *
+ * 编译命令（Termux/PC 均可，需 openssl）：
+ *   FAKE=<只含空 mbedtls/sha256.h 与 mbedtls/hkdf.h 的目录>
+ *   clang -std=c11 -Wall -Wextra -Werror -Wno-deprecated-declarations \
+ *     -DDPT_KL_HOST_TEST -I"$FAKE" -I. -Iexternal/mbedtls/include \
+ *     tests/test_keyladder_ossl.c dpt_cert.c -o t -lcrypto && ./t
+ */
 #define mbedtls_sha256_h
 #define mbedtls_hkdf_h
 #include "dpt_keyladder.c"
