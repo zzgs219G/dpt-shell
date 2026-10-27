@@ -30,7 +30,12 @@ std::optional<std::tuple<uint8_t *,size_t>> g_codeItemFileData;
 
 DPT_DATA_SECTION uint8_t DATA_SECTION_BITCODE[] = ".bitcode";
 DPT_DATA_SECTION uint8_t DATA_SECTION_RO_DATA[] = ".rodata";
-KEEP_SYMBOL DPT_DATA_SECTION uint8_t DPT_UNKNOWN_DATA[] = "1234567890abcdef";
+
+/* 注：DPT_UNKNOWN_DATA 已移除（2026-10-27）。
+ *
+ * 它曾是 encKey 的载体（导出符号，readelf 可定位、dd 可读），
+ * 配置链改为证书派生链后不再需要。保留一个固定的哨兵只会给逆向者
+ * 留一个叫得上名字的锚点，故整块删除，不做"留空"处理。 */
 
 ShellConfig g_shell_config;
 
@@ -1026,29 +1031,69 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
 
             std::string packageName(packageNameChs);
             env->ReleaseStringUTFChars(packageNameJstr, packageNameChs);
-            const char *buildKey = AY_OBFUSCATE(DPT_BUILD_KEY);
-            const char *keySep = AY_OBFUSCATE("_");
-            std::string key_material = packageName + keySep + buildKey;
-            DLOGD("key material for config key: %s", key_material.c_str());
 
-            auto aes_key = hmac_sha256(DPT_UNKNOWN_DATA,
-                                       16,
-                                       reinterpret_cast<const uint8_t *>(key_material.data()),
-                                       key_material.size());
-            if (aes_key.size() != 32) {
-                ELOG("derive config aes key failed");
+            /* ── 配置解密材料：走证书派生链，不再读 DPT_UNKNOWN_DATA ─────
+             *
+             * 旧方案（已废弃，2026-10-27 逆向实证）：
+             *   aes_key = HMAC(DPT_UNKNOWN_DATA, 16, pkg+"_"+buildKey)
+             *   iv      = DPT_UNKNOWN_DATA[0..16]
+             *   DPT_UNKNOWN_DATA 是导出符号，readelf 定位 + dd 读 16 字节即可，
+             *   再解 assets/xixin_config 就拿到 stub_seed（字符串加密全部种子）。
+             *   整条链 5 步、无需 root/调试器/脱壳。
+             *
+             * 现在：与 .bitcode 段密钥同一条派生链（同一 master、同一 salt），
+             * 只用 info 前缀做域分离（"dpt-cfg-v1" vs "dpt-sec-v1"）。
+             * 产物里不再存在任何配置密钥材料，DPT_UNKNOWN_DATA 可以彻底删除。
+             *
+             * ⚠️ 时序：本函数在 JNI_OnLoad 里，晚于 init_array 的 .bitcode 解密，
+             *    但两者都独立算 master（kl_compute_master 每次现算，不缓存），
+             *    因此不依赖彼此的执行顺序。 */
+            Dl_info cfg_info;
+            std::string cfg_so_path;
+            if (dladdr((const void *) read_shell_config, &cfg_info) && cfg_info.dli_fname != nullptr) {
+                cfg_so_path.assign(cfg_info.dli_fname);
+            }
+
+            dpt_cert_t cfg_cert;
+            std::string cfg_apk;
+            {
+                char apk_buf[512] = {0};
+                if (dpt_kl_locate_apk(cfg_so_path.c_str(), apk_buf, sizeof(apk_buf)) != 0) {
+                    ELOG("config: locate apk failed");
+                    release_package(package_addr, package_size);
+                    return;
+                }
+                cfg_apk.assign(apk_buf);
+            }
+            if (dpt_cert_first_signer(cfg_apk.c_str(), &cfg_cert) != 0) {
+                ELOG("config: extract cert failed");
                 release_package(package_addr, package_size);
                 return;
             }
-            memcpy(g_shell_config.aes_key, aes_key.data(), sizeof(g_shell_config.aes_key));
+
+            uint8_t cfg_material[DPT_KL_CONFIG_MATERIAL_LEN];
+            int cfg_rc = dpt_kl_derive_config_material(
+                    cfg_cert.der, cfg_cert.der_len,
+                    packageName.c_str(), packageName.size(),
+                    cfg_so_path.c_str(), cfg_material);
+            dpt_cert_free(&cfg_cert);
+            if (cfg_rc != 0) {
+                ELOG("config: derive material failed rc=%d", cfg_rc);
+                memset(cfg_material, 0, sizeof(cfg_material));
+                release_package(package_addr, package_size);
+                return;
+            }
+
+            uint8_t aes_key_buf[32];
+            uint8_t iv[16];
+            memcpy(aes_key_buf, cfg_material, 32);
+            memcpy(iv, cfg_material + 32, 16);
+            memset(cfg_material, 0, sizeof(cfg_material));
+
+            memcpy(g_shell_config.aes_key, aes_key_buf, sizeof(g_shell_config.aes_key));
 
             std::vector<uint8_t> indata(entry_data, entry_data + entry_size);
-
-            uint8_t iv[16] = {0};
-            memcpy(iv, DPT_UNKNOWN_DATA, 16);
-            iv[3] = 0x2f;
-            iv[9] = 0x76;
-            auto decrypted_data = aes_cbc_decrypt(aes_key.data(), 256, iv, indata.data(), entry_size);
+            auto decrypted_data = aes_cbc_decrypt(aes_key_buf, 256, iv, indata.data(), entry_size);
             if (decrypted_data.empty()) {
                 ELOG("decrypt shell config failed");
                 release_package(package_addr, package_size);

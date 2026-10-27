@@ -469,18 +469,80 @@ public abstract class AndroidPackage {
         return CryptoUtils.hmacSha256(randomKey, keyMaterial);
     }
 
+    /**
+     * 加密并写出 shell config。
+     *
+     * 【2026-10-27 改：配置解密材料改走证书派生链】
+     * 旧方案用 HMAC(encKey, pkg+"_"+buildKey) 派生 aes_key、encKey 改两位做 iv，
+     * 而 encKey 明文躺在导出符号 DPT_UNKNOWN_DATA 里。逆向实证的完整攻击链：
+     *   readelf -sW --dyn-syms | grep DPT_UNKNOWN_DATA   → 得到 symbol value
+     *   dd 读该地址 16 字节                               → encKey
+     *   HMAC + AES-CBC 解 assets/xixin_config             → stub_seed 等
+     * 5 步、无需 root/调试器/脱壳。
+     *
+     * 现在与 .bitcode 段密钥共用同一条派生链（同一 master、同一 salt），
+     * 只用 info 前缀做域分离（"dpt-cfg-v1"）。产物里不再有任何配置密钥材料。
+     *
+     * 参数 key 保留仅为签名兼容（Apk/Aab 两个调用点），不再参与派生。
+     */
     public void writeConfig(String packageDir, byte[] key) {
-        File configFile = new File(getOutAssetsDir(packageDir).getAbsolutePath() + File.separator + Const.KEY_SHELL_CONFIG_STORE_NAME);
+        File configFile = new File(getOutAssetsDir(packageDir).getAbsolutePath() + File.separator, Const.KEY_SHELL_CONFIG_STORE_NAME);
         ShellConfig shellConfig = ShellConfig.getInstance();
         String json = shellConfig.toJson();
         LogUtils.info("Write config: " + json);
-        byte[] aesKey = deriveConfigAesKey(key);
-        byte[] iv = KeyUtils.generateIV(key);
+
+        byte[] material = deriveConfigMaterial();
+        byte[] aesKey = Arrays.copyOfRange(material, 0, 32);
+        byte[] iv = Arrays.copyOfRange(material, 32, 48);
+        Arrays.fill(material, (byte) 0);
+
         byte[] secData = CryptoUtils.aesEncrypt(aesKey, iv, json.getBytes(StandardCharsets.UTF_8));
+        Arrays.fill(aesKey, (byte) 0);
+        Arrays.fill(iv, (byte) 0);
         if (secData == null) {
             throw new IllegalStateException("encrypt shell config failed");
         }
         IoUtils.writeFile(configFile.getAbsolutePath(), secData);
+    }
+
+    /**
+     * 派生配置解密材料：[aes_key(32) || iv(16)]，共 48 字节。
+     *
+     * 必须与运行期 dpt_kl_derive_config_material() 逐字节一致：
+     *   master = SHA256(seed_8 || "dpt-cfg-master" )      ← 刻意不含 CRC
+     *   salt   = SHA256(certDER)
+     *   info   = "dpt-cfg-v1" + pkg
+     *   out    = HKDF-SHA256(master, salt, info, 48)
+     *
+     * ⚠️ 为什么配置链的 master **不能**混入 CRC32(.text)（与段密钥不同）：
+     *   配置只有一份（assets/xixin_config），而 4 个 ABI 的 so 各有不同的
+     *   .text CRC（实测 arm=0xf38fa79d / arm64=0xbbb30a8d / x86=0x359a023e /
+     *   x86_64=0xe50120a1）。运行期在哪个 ABI 上跑就算出哪个 CRC，
+     *   若 master 掺了它，同一份配置在不同 ABI 上必然解不开。
+     *   段密钥没这个问题：每个 ABI 的 so 各自加密自己的 .bitcode。
+     *
+     * 代价（如实记录）：配置链失去"改 .text 即自毁"的自绑定特性。
+     * 它仍绑定 seed + 证书 + 包名，且产物里不再有任何密钥材料 ——
+     * 相比旧方案（key 明文躺在导出符号里）仍是数量级的提升。
+     */
+    private byte[] deriveConfigMaterial() {
+        String seed = readKeyladderSeed();
+        String pkg = getPackageName();
+        if (pkg == null || pkg.isEmpty()) {
+            throw new IllegalStateException("配置派生：包名为空");
+        }
+        byte[] certDer;
+        try {
+            certDer = com.luoye.dpt.util.KeyLadder.extractFirstCertDer(getCertSourceFile());
+        } catch (Exception e) {
+            throw new IllegalStateException("配置派生：提取证书失败", e);
+        }
+        if (certDer == null) {
+            throw new IllegalStateException("配置派生：无法从 APK 提取证书 DER: "
+                    + getCertSourceFile().getAbsolutePath());
+        }
+        long seedVal = Long.parseUnsignedLong(seed, 16);
+        return com.luoye.dpt.util.KeyLadder.deriveConfigMaterial(seedVal, certDer, pkg);
     }
 
     /**
@@ -727,8 +789,8 @@ public abstract class AndroidPackage {
     }
 
     public void encryptSoFiles(String packageOutDir, byte[] rc4Key){
-        // rc4Key 仍被使用：写入 DPT_UNKNOWN_DATA 供运行期派生配置 aes_key/iv
-        // （与 .bitcode 的派生链是两条独立链路，见下方 writeSoFileCryptKey 注释）。
+        // rc4Key 不再使用：.bitcode 走证书派生链，配置也走派生链，
+        // 产物里不再落任何密钥材料。保留参数仅为 Apk/Aab 两个调用点的签名兼容。
         File obfDir = new File(getOutAssetsDir(packageOutDir).getAbsolutePath() + File.separator, Const.KEY_LIBS_DIR_NAME);
         File[] soAbiDirs = obfDir.listFiles();
         if(soAbiDirs == null) {
@@ -798,21 +860,16 @@ public abstract class AndroidPackage {
                     throw new IllegalStateException(
                             "派生链：锁箱 " + soFile.getName() + " 失败", e);
                 }
-                // ⚠️ 必须继续写 DPT_UNKNOWN_DATA，即使 .bitcode 已改走派生链。
+                // 不再调用 writeSoFileCryptKey()：DPT_UNKNOWN_DATA 已删除。
                 //
-                // 这个符号不只给 .bitcode 用。运行期 read_shell_config() 有两处
-                // 依赖它的内容（dpt.cpp）：
-                //   · aes_key = HMAC(DPT_UNKNOWN_DATA, 16, pkg + "_" + buildKey)
-                //   · iv      = DPT_UNKNOWN_DATA[0..16]，再改 iv[3]/iv[9]
-                // 打包侧对应的是 encKey（KeyUtils.generateKey 生成，iv 同源）。
-                // 上一版误以为"改走派生链后这个符号就没用了"而删掉本调用，
-                // 结果：DPT_UNKNOWN_DATA 停在哨兵 "1234567890abcdef"
-                //   → 配置解密失败 → jni_cls_name 为空
-                //   → FindClass("") 返回 null → RegisterNatives(null) 
-                //   → ART "JNI DETECTED ERROR: java_class == null" → abort
-                // （2026-10-27 真机实证：.bitcode 已能解开，却在 JNI_OnLoad 崩）。
-                writeSoFileCryptKey(soFile, rc4Key);
-
+                // 历史教训（两步都踩过，别再重演）：
+                //   · v1.2.3 删掉写入 → 配置解密链断裂 → 真机 java_class == null
+                //     abort（当时配置还依赖该符号）
+                //   · v1.2.9 恢复写入 → 真机能启动，但逆向者 readelf + dd
+                //     就能拿到 encKey，进而解出 stub_seed
+                // 正确解法不是"写不写"，而是【让配置链不再依赖任何落盘的 key】——
+                // 见 writeConfig() / deriveConfigMaterial()：配置材料改由
+                // 证书派生链现算，产物里不留任何密钥材料。
                 if (locked) {
                     LogUtils.info("派生链加密完成: %s", soFile.getName());
                 }
@@ -873,29 +930,6 @@ public abstract class AndroidPackage {
         }
     }
 
-    private void writeSoFileCryptKey(File soFile, byte[] rc4key) {
-        try (ReadElf readElf = new ReadElf(soFile)) {
-            ReadElf.Symbol symbol = readElf.getDynamicSymbol(Const.RC4_KEY_SYMBOL);
-            if(symbol == null) {
-                LogUtils.warn("cannot find symbol in %s, no need write key", soFile.getName());
-                return;
-            }
-            else {
-                LogUtils.info("find symbol(%s) in %s", HexUtils.toHexString(symbol.value), soFile.getName());
-            }
-            long value = symbol.value;
-            int shndx = symbol.shndx;
-            List<ReadElf.SectionHeader> sectionHeaders = readElf.getSectionHeaders();
-            ReadElf.SectionHeader sectionHeader = sectionHeaders.get(shndx);
-            long symbolDataOffset = sectionHeader.getOffset() + value - sectionHeader.getAddr();
-            LogUtils.info("write symbol data to %s(%s)", soFile.getName(), HexUtils.toHexString(symbolDataOffset));
-
-            IoUtils.writeFile(soFile.getAbsolutePath(),rc4key,symbolDataOffset);
-        }
-        catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
 
     public void deleteAllDexFiles(String packageDir){
         List<File> dexFiles = getDexFiles(getDexDir(packageDir));

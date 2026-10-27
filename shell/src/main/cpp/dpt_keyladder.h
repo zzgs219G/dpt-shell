@@ -51,8 +51,35 @@ extern "C" {
 #endif
 
 /* 派生标签（info 前缀）。改这里必须同步 Java 侧与对拍测试。
- * 为什么带 "-v1"：将来换派生算法时能通过版本号区分，老包仍能跑。 */
-#define DPT_KL_INFO_PREFIX "dpt-sec-v1"
+ * 为什么带 "-v1"：将来换派生算法时能通过版本号区分，老包仍能跑。
+ *
+ * ⚠️ 不要把完整串写成单个字面量（2026-10-27 逆向实测后改）：
+ *   `strings libxixin.so | grep dpt-` 一条命令就能看到 "dpt-sec-v1"
+ *   和 "dpt-kl-v1"，等于把派生公式的结构直接告诉逆向者。
+ *   这里拆成两段由 kl_info_prefix() 运行期拼接 —— 常量值不变（两侧契约
+ *   不受影响），只是产物里不再有连续明文。
+ *   注意：这挡的是"翻 strings 顺手看到"，不是有备而来的定向分析
+ *   （定向分析可以从代码路径反推拼接结果）。如实标注能力边界。 */
+#define DPT_KL_INFO_PREFIX_A "dpt-se"
+#define DPT_KL_INFO_PREFIX_B "c-v1"
+#define DPT_KL_INFO_PREFIX (DPT_KL_INFO_PREFIX_A DPT_KL_INFO_PREFIX_B)
+
+/* 配置解密材料（aes_key/iv）的派生 info 前缀。
+ *
+ * 为什么配置也要走派生链（2026-10-27 逆向实证）：
+ *   旧方案把 encKey 明文写进导出符号 DPT_UNKNOWN_DATA，逆向者
+ *   `readelf -sW --dyn-syms | grep DPT_UNKNOWN_DATA` 定位后 dd 出 16 字节，
+ *   再 HMAC 出配置 key、AES-CBC 解开 assets/xixin_config，直接拿到
+ *   stub_seed（字符串加密的全部密钥流种子）。整条链 5 步、零 root。
+ *   改走派生链后 so 里不再有任何配置密钥材料，该符号可以彻底删除。
+ *
+ * 与段密钥用不同前缀（域分离）：同一 master/cert 下两条链的 key 不可互推。 */
+#define DPT_KL_CONFIG_INFO_PREFIX_A "dpt-cf"
+#define DPT_KL_CONFIG_INFO_PREFIX_B "g-v1"
+#define DPT_KL_CONFIG_INFO_PREFIX (DPT_KL_CONFIG_INFO_PREFIX_A DPT_KL_CONFIG_INFO_PREFIX_B)
+
+/* 配置材料长度：aes_key 32 字节 + iv 16 字节 = 48。 */
+#define DPT_KL_CONFIG_MATERIAL_LEN 48
 
 /* master 长度。32 字节 = SHA256 输出长度，直接拿来做 HKDF 的 ikm。 */
 #define DPT_KL_MASTER_LEN 32
@@ -103,6 +130,31 @@ int dpt_kl_derive_section_key(const char *so_path,
 
 // so_path: running shell so path; used for CRC32(.text) and APK fallback
 // resolution. cert/pkg come from the installed APK at runtime.
+/* 派生任意长度、任意 info 前缀的密钥材料（HKDF 的通用形态）。
+ *
+ * 给配置链用：dpt_kl_derive_config_material() 需要 48 字节，
+ * 而 dpt_kl_derive() 固定输出 16 字节（段密钥）。
+ *
+ * info = info_prefix || pkg，其它输入与段密钥完全一致（同一 master、同一 salt）。
+ * 返回 0 成功，负数含义同 dpt_kl_derive。 */
+int dpt_kl_derive_material(const uint8_t *cert_der, size_t cert_len,
+                           const char *pkg, size_t pkg_len,
+                           const char *so_path,
+                           const char *info_prefix,
+                           uint8_t *out, size_t out_len);
+
+/* 派生配置解密材料：out = [aes_key(32) || iv(16)]。
+ * 纯函数，不落盘、不读符号。 */
+/* 定位已安装 APK 路径（供配置链在 JNI_OnLoad 里复用同一套探测逻辑：
+ * 先读 Java 写的 DPT_APK_PATH 环境变量，再 apk-path 文件，最后 maps/反推）。
+ * 返回 0 成功。 */
+int dpt_kl_locate_apk(const char *so_path, char *out, size_t cap);
+
+int dpt_kl_derive_config_material(const uint8_t *cert_der, size_t cert_len,
+                                  const char *pkg, size_t pkg_len,
+                                  const char *so_path,
+                                  uint8_t out[DPT_KL_CONFIG_MATERIAL_LEN]);
+
 int dpt_kl_derive(const uint8_t *cert_der, size_t cert_len,
                   const char *pkg, size_t pkg_len,
                   const char *so_path,

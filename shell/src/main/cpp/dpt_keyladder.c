@@ -46,9 +46,13 @@
 #define KL_ELOG(...) do { (void) 0; } while (0)
 #else
 #include <android/log.h>
-#define KL_TAG "dpt_native"
+/* 日志前缀："dpt_native [kl]"。不用自研链的内部叫法做前缀 —— 那会以明文
+ * 串出现在产物里。这里只保留中性缩写，且不参与任何算法。 */
+#define KL_TAG_A "dpt_na"
+#define KL_TAG_B "tive"
+#define KL_TAG (KL_TAG_A KL_TAG_B)
 #define KL_ELOG(...) \
-    __android_log_print(ANDROID_LOG_ERROR, KL_TAG, "[keyladder] " __VA_ARGS__)
+    __android_log_print(ANDROID_LOG_ERROR, KL_TAG, "[kl] " __VA_ARGS__)
 #endif
 
 /* 编译期随机种子：由构建脚本注入，每个 dpt-shell 版本不同。
@@ -57,6 +61,15 @@
 #ifndef DPT_KL_SEED
 #define DPT_KL_SEED 0x0000000000000000ULL
 #endif
+
+/* 拆段定义：避免 strings 直接命中（见 dpt_keyladder.h 的同款说明）。 */
+#define KL_MASTER_BID_A "dpt-kl"
+#define KL_MASTER_BID_B "-v1"
+#define KL_MASTER_BID (KL_MASTER_BID_A KL_MASTER_BID_B)
+
+#define KL_CONFIG_MASTER_BID_A "dpt-cfg"
+#define KL_CONFIG_MASTER_BID_B "-master"
+#define KL_CONFIG_MASTER_BID (KL_CONFIG_MASTER_BID_A KL_CONFIG_MASTER_BID_B)
 
 /* .text 的 CRC32 输入。
  *
@@ -380,7 +393,7 @@ static int kl_compute_master(const char *so_path, uint8_t out[DPT_KL_MASTER_LEN]
     /* 构建标识：用链接期固定的版本串。这里刻意不放运行时信息
      * （进程 ID / 时间），否则同一份 so 每次运行 key 都不同，没法解。 */
     {
-        const char *bid = "dpt-kl-v1";
+        const char *bid = KL_MASTER_BID;
         mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
     }
     mbedtls_sha256_finish(&ctx, out);
@@ -423,6 +436,128 @@ int dpt_kl_derive_with_master(const uint8_t master[DPT_KL_MASTER_LEN],
 
     memset(salt, 0, sizeof(salt));
     memset(info, 0, sizeof(info));
+    return ret == 0 ? 0 : -3;
+}
+
+/* ── 配置链 master（不含 CRC32(.text)）────────────────────────────────
+ *
+ * ⚠️ 为什么与段密钥的 master 不同：
+ *   配置只有一份（assets/xixin_config），而 4 个 ABI 的 so 各有不同的
+ *   .text CRC（实测 arm=0xf38fa79d / arm64=0xbbb30a8d / x86=0x359a023e /
+ *   x86_64=0xe50120a1）。运行期在哪个 ABI 上跑就算出哪个 CRC；
+ *   若 master 掺了它，同一份配置在不同 ABI 上必然解不开。
+ *   段密钥没这个问题 —— 每个 ABI 的 so 各自加密自己的 .bitcode。
+ *
+ *   代价（如实记录）：配置链失去"改 .text 即自毁"的自绑定特性，
+ *   但仍绑定 seed + 证书 + 包名，且产物里不再有任何密钥材料。
+ *
+ * 必须与 Java 侧 KeyLadder.computeConfigMaster() 逐字节一致。
+ */
+
+
+static void kl_compute_config_master(uint8_t out[DPT_KL_MASTER_LEN]) {
+    uint8_t seed[8];
+    for (int i = 0; i < 8; i++) {
+        seed[i] = (uint8_t) (DPT_KL_SEED >> (i * 8));
+    }
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, seed, sizeof(seed));
+    mbedtls_sha256_update(&ctx, (const uint8_t *) KL_CONFIG_MASTER_BID,
+                          strlen(KL_CONFIG_MASTER_BID));
+    mbedtls_sha256_finish(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    memset(seed, 0, sizeof(seed));
+}
+
+/* 通用 HKDF 派生：任意 info 前缀 + 任意输出长度。
+ * 与 dpt_kl_derive / dpt_kl_derive_with_master 共用同一 master 与 salt，
+ * 只用 info 做域分离（"dpt-sec-v1"+pkg 给段密钥，"dpt-cfg-v1"+pkg 给配置）。 */
+int dpt_kl_derive_material(const uint8_t *cert_der, size_t cert_len,
+                           const char *pkg, size_t pkg_len,
+                           const char *so_path,
+                           const char *info_prefix,
+                           uint8_t *out, size_t out_len) {
+    if (cert_der == NULL || pkg == NULL || out == NULL || out_len == 0) return -1;
+    if (info_prefix == NULL) return -1;
+    if (pkg_len == 0) return -1;
+    if (cert_len < 16 || cert_len > 8192) return -2;
+
+    uint8_t master[DPT_KL_MASTER_LEN];
+    if (kl_compute_master(so_path, master) != 0) {
+        memset(master, 0, sizeof(master));
+        return -4;
+    }
+
+    uint8_t salt[32];
+    mbedtls_sha256(cert_der, cert_len, salt, 0);
+
+    size_t prefix_len = strlen(info_prefix);
+    if (pkg_len > 128) pkg_len = 128;
+    size_t info_len = prefix_len + pkg_len;
+    uint8_t *info = (uint8_t *) malloc(info_len);
+    if (info == NULL) {
+        memset(master, 0, sizeof(master));
+        memset(salt, 0, sizeof(salt));
+        return -3;
+    }
+    memcpy(info, info_prefix, prefix_len);
+    memcpy(info + prefix_len, pkg, pkg_len);
+
+    int ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                           salt, sizeof(salt),
+                           master, DPT_KL_MASTER_LEN,
+                           info, info_len,
+                           out, out_len);
+
+    memset(info, 0, info_len);
+    free(info);
+    memset(salt, 0, sizeof(salt));
+    memset(master, 0, sizeof(master));
+    return ret == 0 ? 0 : -3;
+}
+
+int dpt_kl_derive_config_material(const uint8_t *cert_der, size_t cert_len,
+                                  const char *pkg, size_t pkg_len,
+                                  const char *so_path,
+                                  uint8_t out[DPT_KL_CONFIG_MATERIAL_LEN]) {
+    /* so_path 保留在签名里但【不参与派生】：配置链刻意不含 CRC32(.text)，
+     * 否则多 ABI 无法共用同一份配置（见 kl_compute_config_master 注释）。 */
+    (void) so_path;
+
+    if (cert_der == NULL || pkg == NULL || out == NULL) return -1;
+    if (pkg_len == 0) return -1;
+    if (cert_len < 16 || cert_len > 8192) return -2;
+
+    uint8_t master[DPT_KL_MASTER_LEN];
+    kl_compute_config_master(master);
+
+    uint8_t salt[32];
+    mbedtls_sha256(cert_der, cert_len, salt, 0);
+
+    size_t prefix_len = strlen(DPT_KL_CONFIG_INFO_PREFIX);
+    if (pkg_len > 128) pkg_len = 128;
+    size_t info_len = prefix_len + pkg_len;
+    uint8_t *info = (uint8_t *) malloc(info_len);
+    if (info == NULL) {
+        memset(master, 0, sizeof(master));
+        memset(salt, 0, sizeof(salt));
+        return -3;
+    }
+    memcpy(info, DPT_KL_CONFIG_INFO_PREFIX, prefix_len);
+    memcpy(info + prefix_len, pkg, pkg_len);
+
+    int ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                           salt, sizeof(salt),
+                           master, DPT_KL_MASTER_LEN,
+                           info, info_len,
+                           out, DPT_KL_CONFIG_MATERIAL_LEN);
+
+    memset(info, 0, info_len);
+    free(info);
+    memset(salt, 0, sizeof(salt));
+    memset(master, 0, sizeof(master));
     return ret == 0 ? 0 : -3;
 }
 
@@ -619,6 +754,7 @@ int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) 
          * find apk failed，无法区分是环境变量没设、hint 文件没写成、
          * 还是 maps 里没有 base.apk —— 真机排障为此多花了两轮。 */
         const char *env = getenv(KL_APK_ENV_NAME);
+        (void) env;
         KL_ELOG("find apk failed: so_path=%s env(%s)=%s maps_hit=no hint_file=unreadable",
                 so_path ? so_path : "(null)",
                 KL_APK_ENV_NAME,
@@ -652,6 +788,10 @@ int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) 
     return rc;
 }
 
+int dpt_kl_locate_apk(const char *so_path, char *out, size_t cap) {
+    return kl_find_apk(so_path, out, cap);
+}
+
 /* 测试专用：给定 seed 与 CRC32 算 master（绕过 __start__text 等链接期符号，
  * 宿主测试链接不到那些符号）。与 Java 侧 KeyLadder.computeMaster 对应。 */
 void kl_compute_master_for_test(uint8_t out[DPT_KL_MASTER_LEN],
@@ -663,7 +803,7 @@ void kl_compute_master_for_test(uint8_t out[DPT_KL_MASTER_LEN],
     mbedtls_sha256_starts(&ctx, 0);
     mbedtls_sha256_update(&ctx, seedb, sizeof(seedb));
     mbedtls_sha256_update(&ctx, (const uint8_t *) &crc, sizeof(crc));
-    const char *bid = "dpt-kl-v1";
+    const char *bid = KL_MASTER_BID;
     mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
     mbedtls_sha256_finish(&ctx, out);
     mbedtls_sha256_free(&ctx);

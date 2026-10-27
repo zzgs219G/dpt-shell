@@ -133,6 +133,44 @@ def afterAssembleCopy(Project project, Map archMap, boolean debug) {
         }
     }
 
+    // ── 移除 .comment 段（2026-10-27，逆向实测后补）──────────────────
+    // 产物里 .comment 明文写着完整工具链指纹，例如：
+    //   Android (12027248, +pgo, +bolt, +lto, +mlgo, based on r522817)
+    //   clang version 18.0.1 (...)
+    //   Linker: LLD 18.0.1
+    // 逆向者可据此精确对应已知优化行为与工具链缺陷。
+    // `--strip-all` 只删 .symtab/.strtab，删不掉 .comment，必须显式移除。
+    // 与 apk-protect-action 的 libnc.so 处理保持一致。
+    // 失败只告警不阻塞：拿不到 objcopy 只是少一层收益，不该让构建变红。
+    def objcopy = null
+    def ndkDir = android.ndkDirectory
+    if (ndkDir != null) {
+        def hostTag = System.getProperty("os.name").toLowerCase().contains("mac") ? "darwin-x86_64" : "linux-x86_64"
+        def cand = new File(ndkDir, "toolchains/llvm/prebuilt/${hostTag}/bin/llvm-objcopy")
+        if (cand.isFile()) objcopy = cand.absolutePath
+    }
+    if (objcopy == null) {
+        def p = ["bash", "-lc", "command -v llvm-objcopy || command -v objcopy || true"].execute()
+        p.waitFor()
+        def out = p.in.text.trim()
+        if (!out.isEmpty()) objcopy = out.readLines().first().trim()
+    }
+    for(e in archMap) {
+        def soFile = new File(targetSoLibsDir, e.value + File.separator + fullSoName)
+        if (!soFile.isFile()) continue
+        if (objcopy == null) {
+            logger.warn("[shell] 未找到 llvm-objcopy，.comment 段保留（工具链指纹泄露）")
+            continue
+        }
+        def proc = [objcopy, "--remove-section=.comment", soFile.absolutePath].execute()
+        proc.waitFor()
+        if (proc.exitValue() != 0) {
+            logger.warn("[shell] .comment 移除失败（${soFile.name}）: ${proc.err.text.trim()}")
+        } else {
+            println("[shell] .comment 已移除: ${soFile.name}")
+        }
+    }
+
     // Keep encrypt/decrypt key next to the SO artifacts that dpt packages.
     def buildKeyFile = new File(targetDir, "build-key")
     buildKeyFile.text = "${dptBuildKey}\n"

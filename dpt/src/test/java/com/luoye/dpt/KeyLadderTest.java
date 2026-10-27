@@ -163,6 +163,54 @@ public class KeyLadderTest {
     }
 
     /**
+     * 回归（2026-10-27 逆向实证）：配置材料走派生链，且**不含 CRC32(.text)**。
+     *
+     * <p>为什么不含 CRC：配置只有一份（assets/xixin_config），而 4 个 ABI 的 so
+     * 各有不同 .text CRC（实测 arm=0xf38fa79d / arm64=0xbbb30a8d /
+     * x86=0x359a023e / x86_64=0xe50120a1）。若 master 掺了它，同一份配置在
+     * 不同 ABI 上必然解不开。段密钥没这个问题：每个 ABI 的 so 各自加密自己的
+     * .bitcode。
+     *
+     * <p>期望值来自真实链路三方对拍（Java / C 侧 dpt_keyladder.c /
+     * 独立 Python 实现），改公式必须同步三者。
+     */
+    @Test
+    public void deriveConfigMaterial_matchesCSide_andIgnoresAbi() {
+        File apk = null;
+        for (String c : new String[]{
+                System.getenv("TEST_APK"),
+                "/storage/emulated/0/常用/工作台😡/简盒-正式版-v2.1.2_212-20261025-0704-a8403a9 (1)_sign.apk"}) {
+            if (c != null && new File(c).isFile()) { apk = new File(c); break; }
+        }
+        if (apk == null) {
+            System.out.println("⏭ 跳过：未找到测试 APK（设 TEST_APK 环境变量可启用）");
+            return;
+        }
+        byte[] cert;
+        try {
+            cert = KeyLadder.extractFirstCertDer(apk);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        assertNotNull(cert);
+
+        byte[] m = KeyLadder.deriveConfigMaterial(0xc640134a43c8b37eL, cert, "com.xixin.box");
+        assertEquals("配置材料必须是 48 字节（aes_key 32 + iv 16）",
+                KeyLadder.CONFIG_MATERIAL_LEN, m.length);
+        assertEquals("配置材料必须与 C 侧 dpt_kl_derive_config_material 逐字节一致",
+                "9fdfe58818a84c3bfa8cc6da17c1e3256e853522dbe73466b871c512813444a9",
+                HexUtils.toHexString(java.util.Arrays.copyOfRange(m, 0, 32)));
+        assertEquals("iv 必须与 C 侧一致",
+                "ab103d97c78df4212f26c979e4f0c57f",
+                HexUtils.toHexString(java.util.Arrays.copyOfRange(m, 32, 48)));
+
+        // 同一个 seed/证书/包名下，配置材料不得随 ABI 变化 —— 本方法签名里
+        // 压根没有 ABI/CRC 入参，这条断言是"接口层面就杜绝"的护栏。
+        byte[] again = KeyLadder.deriveConfigMaterial(0xc640134a43c8b37eL, cert, "com.xixin.box");
+        assertArrayEquals("配置材料必须确定性", m, again);
+    }
+
+    /**
      * 证书提取：用一个真实 APK 验证（若能找到）。
      * 找不到则 skip 而非 fail —— 测试环境不该依赖外部文件存在。
      */

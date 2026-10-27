@@ -160,6 +160,72 @@ public final class KeyLadder {
         return hkdfSha256(salt, master, info, KEY_LEN);
     }
 
+    /* ── 配置解密材料（2026-10-27，取代明文 encKey 方案）────────────────
+     *
+     * 旧方案：aes_key = HMAC(encKey, pkg+"_"+buildKey)，iv = encKey 改两位，
+     *        而 encKey 明文写在导出符号 DPT_UNKNOWN_DATA 里 ——
+     *        readelf 定位 + dd 读 16 字节 + AES-CBC 即可解出 stub_seed。
+     *
+     * 新方案：与段密钥同一条派生链（同一 seed、同一证书），
+     *        但 master **不含 CRC32(.text)**：配置只有一份，而 4 个 ABI 的
+     *        so 各有不同 .text CRC，掺进去会导致同一配置在不同 ABI 上解不开。
+     *
+     * 运行期对应 dpt_kl_derive_config_material()（dpt_keyladder.c）。
+     */
+
+    /** 配置材料 info 前缀，与 C 侧 DPT_KL_CONFIG_INFO_PREFIX 一致。 */
+    private static final String CONFIG_INFO_PREFIX = "dpt-cfg-v1";
+
+    /** 配置 master 的版本串，与 C 侧 KL_CONFIG_MASTER_BID 一致。 */
+    private static final String CONFIG_MASTER_BID = "dpt-cfg-master";
+
+    /** 配置材料长度：aes_key(32) + iv(16)。 */
+    public static final int CONFIG_MATERIAL_LEN = 48;
+
+    /**
+     * master_cfg = SHA256(seed_8 || "dpt-cfg-master")
+     *
+     * ⚠️ 与 computeMaster 的区别：不含 CRC32(.text)。原因见上方注释。
+     */
+    public static byte[] computeConfigMaster(long seed) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(seedToBytes(seed));
+            md.update(CONFIG_MASTER_BID.getBytes(StandardCharsets.US_ASCII));
+            return md.digest();
+        } catch (Exception e) {
+            throw new IllegalStateException("config master computation failed", e);
+        }
+    }
+
+    /**
+     * 配置材料 = HKDF-SHA256(master_cfg, SHA256(certDER), "dpt-cfg-v1"+pkg, 48)
+     *
+     * @return 48 字节：[0,32) = aes_key，(32,48) = iv
+     */
+    public static byte[] deriveConfigMaterial(long seed, byte[] certDer, String pkg) {
+        byte[] master = computeConfigMaster(seed);
+        byte[] salt = sha256(certDer);
+        byte[] info = (CONFIG_INFO_PREFIX + pkg).getBytes(StandardCharsets.UTF_8);
+        byte[] out = hkdfSha256(salt, master, info, CONFIG_MATERIAL_LEN);
+        java.util.Arrays.fill(master, (byte) 0);
+        return out;
+    }
+
+    /**
+     * 通用派生：任意 info 前缀 + 任意长度（与 C 侧 dpt_kl_derive_material 对应）。
+     * 保留给后续新增链路复用，避免每加一条链就复制一遍 HKDF 调用。
+     */
+    public static byte[] deriveMaterial(long seed, long crc32Text, byte[] certDer,
+                                        String pkg, String infoPrefix, int len) {
+        byte[] master = computeMaster(seed, crc32Text);
+        byte[] salt = sha256(certDer);
+        byte[] info = (infoPrefix + pkg).getBytes(StandardCharsets.UTF_8);
+        byte[] out = hkdfSha256(salt, master, info, len);
+        java.util.Arrays.fill(master, (byte) 0);
+        return out;
+    }
+
     /* ── 证书 DER 提取（v1/v2/v3）────────────────────────────────────
      *
      * 为什么不用 PackageManager：打包时没有设备上下文，且我们要的是"打进
