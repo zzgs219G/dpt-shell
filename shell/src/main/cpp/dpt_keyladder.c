@@ -62,14 +62,60 @@
 #define DPT_KL_SEED 0x0000000000000000ULL
 #endif
 
-/* 拆段定义：避免 strings 直接命中（见 dpt_keyladder.h 的同款说明）。 */
-#define KL_MASTER_BID_A "dpt-kl"
-#define KL_MASTER_BID_B "-v1"
-#define KL_MASTER_BID (KL_MASTER_BID_A KL_MASTER_BID_B)
+/* ── 派生常量：密文存放 + 运行期异或还原 ─────────────────────────────
+ *
+ * 为什么不用字符串字面量（含"拆成两段"）：C 标准要求相邻字面量在编译期
+ * 拼接，产物里仍是完整的一份明文（v1.3.0 实测四个常量串全部原样存在）。
+ * 这里改成位移相关掩码的密文表 + volatile 取值，优化器无法把它折叠回明文
+ * （不加 volatile 实测仍会泄漏 "dpt-sec-" 这样的前缀片段）。
+ */
+#define KL_MASK_N 32
 
-#define KL_CONFIG_MASTER_BID_A "dpt-cfg"
-#define KL_CONFIG_MASTER_BID_B "-master"
-#define KL_CONFIG_MASTER_BID (KL_CONFIG_MASTER_BID_A KL_CONFIG_MASTER_BID_B)
+static void kl_dec(const unsigned char *enc, const unsigned char *mask,
+                   char *out, size_t n, size_t cap) {
+    if (cap <= n) { if (cap) out[0] = 0; return; }
+    const volatile unsigned char *e = enc;
+    const volatile unsigned char *k = mask;
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (char) (e[i] ^ k[i]);
+    }
+    out[n] = 0;
+}
+
+/* "dpt-sec-v1" */
+static const unsigned char KL_ENC_SEC[] = { 0x75, 0x72, 0xcf, 0x51, 0xf6, 0x73, 0x0c, 0xfd, 0x0f, 0x9b };
+static const unsigned char KL_MSK_SEC[] = { 0x11, 0x02, 0xbb, 0x7c, 0x85, 0x16, 0x6f, 0xd0, 0x79, 0xaa };
+
+/* "dpt-cfg-v1" */
+static const unsigned char KL_ENC_CFG[] = { 0x75, 0x72, 0xcf, 0x51, 0xe6, 0x70, 0x08, 0xfd, 0x0f, 0x9b };
+static const unsigned char KL_MSK_CFG[] = { 0x11, 0x02, 0xbb, 0x7c, 0x85, 0x16, 0x6f, 0xd0, 0x79, 0xaa };
+
+/* "dpt-kl-v1" */
+static const unsigned char KL_ENC_KL[] = { 0x75, 0x72, 0xcf, 0x51, 0xee, 0x7a, 0x42, 0xa6, 0x48 };
+static const unsigned char KL_MSK_KL[] = { 0x11, 0x02, 0xbb, 0x7c, 0x85, 0x16, 0x6f, 0xd0, 0x79 };
+
+/* "dpt-cfg-master" */
+static const unsigned char KL_ENC_CFGM[] = { 0x75, 0x72, 0xcf, 0x51, 0xe6, 0x70, 0x08, 0xfd, 0x14, 0xcb, 0xd0, 0xd0, 0x88, 0xcc };
+static const unsigned char KL_MSK_CFGM[] = { 0x11, 0x02, 0xbb, 0x7c, 0x85, 0x16, 0x6f, 0xd0, 0x79, 0xaa, 0xa3, 0xa4, 0xed, 0xbe };
+
+const char *dpt_kl_info_prefix(char *out, size_t cap) {
+    kl_dec(KL_ENC_SEC, KL_MSK_SEC, out, DPT_KL_INFO_LEN, cap);
+    return out;
+}
+const char *dpt_kl_config_info_prefix(char *out, size_t cap) {
+    kl_dec(KL_ENC_CFG, KL_MSK_CFG, out, DPT_KL_CONFIG_INFO_LEN, cap);
+    return out;
+}
+const char *dpt_kl_master_bid(char *out, size_t cap) {
+    kl_dec(KL_ENC_KL, KL_MSK_KL, out, DPT_KL_MASTER_BID_LEN, cap);
+    return out;
+}
+const char *dpt_kl_config_master_bid(char *out, size_t cap) {
+    kl_dec(KL_ENC_CFGM, KL_MSK_CFGM, out, DPT_KL_CONFIG_MASTER_BID_LEN, cap);
+    return out;
+}
+
+
 
 /* .text 的 CRC32 输入。
  *
@@ -393,8 +439,10 @@ static int kl_compute_master(const char *so_path, uint8_t out[DPT_KL_MASTER_LEN]
     /* 构建标识：用链接期固定的版本串。这里刻意不放运行时信息
      * （进程 ID / 时间），否则同一份 so 每次运行 key 都不同，没法解。 */
     {
-        const char *bid = KL_MASTER_BID;
+        char bid[24];
+        dpt_kl_master_bid(bid, sizeof(bid));
         mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
+        memset(bid, 0, sizeof(bid));
     }
     mbedtls_sha256_finish(&ctx, out);
     mbedtls_sha256_free(&ctx);
@@ -421,11 +469,13 @@ int dpt_kl_derive_with_master(const uint8_t master[DPT_KL_MASTER_LEN],
     uint8_t salt[32];
     mbedtls_sha256(cert_der, cert_len, salt, 0);
 
-    /* info = "dpt-sec-v1" || pkg */
-    const size_t prefix_len = sizeof(DPT_KL_INFO_PREFIX) - 1;
+    /* info = <段密钥前缀> || pkg */
+    char prefix_buf[24];
+    dpt_kl_info_prefix(prefix_buf, sizeof(prefix_buf));
+    const size_t prefix_len = strlen(prefix_buf);
     if (pkg_len > 128) pkg_len = 128;   /* 包名不可能超过 128 */
     uint8_t info[prefix_len + 128];
-    memcpy(info, DPT_KL_INFO_PREFIX, prefix_len);
+    memcpy(info, prefix_buf, prefix_len);
     memcpy(info + prefix_len, pkg, pkg_len);
 
     int ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
@@ -436,6 +486,7 @@ int dpt_kl_derive_with_master(const uint8_t master[DPT_KL_MASTER_LEN],
 
     memset(salt, 0, sizeof(salt));
     memset(info, 0, sizeof(info));
+    memset(prefix_buf, 0, sizeof(prefix_buf));
     return ret == 0 ? 0 : -3;
 }
 
@@ -464,8 +515,12 @@ static void kl_compute_config_master(uint8_t out[DPT_KL_MASTER_LEN]) {
     mbedtls_sha256_init(&ctx);
     mbedtls_sha256_starts(&ctx, 0);
     mbedtls_sha256_update(&ctx, seed, sizeof(seed));
-    mbedtls_sha256_update(&ctx, (const uint8_t *) KL_CONFIG_MASTER_BID,
-                          strlen(KL_CONFIG_MASTER_BID));
+    {
+        char bid[24];
+        dpt_kl_config_master_bid(bid, sizeof(bid));
+        mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
+        memset(bid, 0, sizeof(bid));
+    }
     mbedtls_sha256_finish(&ctx, out);
     mbedtls_sha256_free(&ctx);
     memset(seed, 0, sizeof(seed));
@@ -536,7 +591,9 @@ int dpt_kl_derive_config_material(const uint8_t *cert_der, size_t cert_len,
     uint8_t salt[32];
     mbedtls_sha256(cert_der, cert_len, salt, 0);
 
-    size_t prefix_len = strlen(DPT_KL_CONFIG_INFO_PREFIX);
+    char cfg_prefix[24];
+    dpt_kl_config_info_prefix(cfg_prefix, sizeof(cfg_prefix));
+    size_t prefix_len = strlen(cfg_prefix);
     if (pkg_len > 128) pkg_len = 128;
     size_t info_len = prefix_len + pkg_len;
     uint8_t *info = (uint8_t *) malloc(info_len);
@@ -545,7 +602,7 @@ int dpt_kl_derive_config_material(const uint8_t *cert_der, size_t cert_len,
         memset(salt, 0, sizeof(salt));
         return -3;
     }
-    memcpy(info, DPT_KL_CONFIG_INFO_PREFIX, prefix_len);
+    memcpy(info, cfg_prefix, prefix_len);
     memcpy(info + prefix_len, pkg, pkg_len);
 
     int ret = mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
@@ -803,8 +860,12 @@ void kl_compute_master_for_test(uint8_t out[DPT_KL_MASTER_LEN],
     mbedtls_sha256_starts(&ctx, 0);
     mbedtls_sha256_update(&ctx, seedb, sizeof(seedb));
     mbedtls_sha256_update(&ctx, (const uint8_t *) &crc, sizeof(crc));
-    const char *bid = KL_MASTER_BID;
-    mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
+    {
+        char bid[24];
+        dpt_kl_master_bid(bid, sizeof(bid));
+        mbedtls_sha256_update(&ctx, (const uint8_t *) bid, strlen(bid));
+        memset(bid, 0, sizeof(bid));
+    }
     mbedtls_sha256_finish(&ctx, out);
     mbedtls_sha256_free(&ctx);
     memset(seedb, 0, sizeof(seedb));

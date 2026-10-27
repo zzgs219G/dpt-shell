@@ -53,16 +53,27 @@ extern "C" {
 /* 派生标签（info 前缀）。改这里必须同步 Java 侧与对拍测试。
  * 为什么带 "-v1"：将来换派生算法时能通过版本号区分，老包仍能跑。
  *
- * ⚠️ 不要把完整串写成单个字面量（2026-10-27 逆向实测后改）：
- *   `strings libxixin.so | grep dpt-` 一条命令就能看到 "dpt-sec-v1"
- *   和 "dpt-kl-v1"，等于把派生公式的结构直接告诉逆向者。
- *   这里拆成两段由 kl_info_prefix() 运行期拼接 —— 常量值不变（两侧契约
- *   不受影响），只是产物里不再有连续明文。
- *   注意：这挡的是"翻 strings 顺手看到"，不是有备而来的定向分析
- *   （定向分析可以从代码路径反推拼接结果）。如实标注能力边界。 */
-#define DPT_KL_INFO_PREFIX_A "dpt-se"
-#define DPT_KL_INFO_PREFIX_B "c-v1"
-#define DPT_KL_INFO_PREFIX (DPT_KL_INFO_PREFIX_A DPT_KL_INFO_PREFIX_B)
+ * ⚠️ 这些常量不能以完整字面量出现在产物里（2026-10-27 逆向实测）：
+ *   `strings libxixin.so | grep dpt-` 一条命令就能看到 "dpt-sec-v1"、
+ *   "dpt-kl-v1"，等于把派生公式的结构告诉逆向者。
+ *
+ *   曾经试过"拆成相邻两段字面量由编译器拼接"——【无效】：
+ *   C 标准规定相邻字符串字面量在编译期拼接，产物里仍是完整的一份
+ *   （v1.3.0 实测：四个常量串全部原样存在）。
+ *
+ *   最终方案：以【位置相关掩码】存密文，运行期用 volatile 指针取值异或还原。
+ *   volatile 是必需的 —— 否则优化器做常量传播，会把明文算回 .rodata
+ *   （实测：不加 volatile 仍泄漏 "dpt-sec-"）。
+ *
+ *   能力边界（如实）：这挡的是静态 strings/二进制扫描；
+ *   动态调试下断点看 kl_info_prefix() 的返回值仍能拿到明文。
+ *   真正要藏住必须让 key 不依赖固定常量，那是另一层设计。 */
+
+/* 密文 + 掩码：运行时还原成 "dpt-sec-v1"。 */
+#define DPT_KL_INFO_LEN 10
+#define DPT_KL_CONFIG_INFO_LEN 10
+#define DPT_KL_MASTER_BID_LEN 9
+#define DPT_KL_CONFIG_MASTER_BID_LEN 14
 
 /* 配置解密材料（aes_key/iv）的派生 info 前缀。
  *
@@ -74,9 +85,13 @@ extern "C" {
  *   改走派生链后 so 里不再有任何配置密钥材料，该符号可以彻底删除。
  *
  * 与段密钥用不同前缀（域分离）：同一 master/cert 下两条链的 key 不可互推。 */
-#define DPT_KL_CONFIG_INFO_PREFIX_A "dpt-cf"
-#define DPT_KL_CONFIG_INFO_PREFIX_B "g-v1"
-#define DPT_KL_CONFIG_INFO_PREFIX (DPT_KL_CONFIG_INFO_PREFIX_A DPT_KL_CONFIG_INFO_PREFIX_B)
+/* 运行期还原 info 前缀 / master 版本串。
+ * 为什么不用 #define 字符串：见上方说明（编译期拼接无效）。
+ * out 需至少 len+1 字节；返回 out。 */
+const char *dpt_kl_info_prefix(char *out, size_t cap);
+const char *dpt_kl_config_info_prefix(char *out, size_t cap);
+const char *dpt_kl_master_bid(char *out, size_t cap);
+const char *dpt_kl_config_master_bid(char *out, size_t cap);
 
 /* 配置材料长度：aes_key 32 字节 + iv 16 字节 = 48。 */
 #define DPT_KL_CONFIG_MATERIAL_LEN 48
