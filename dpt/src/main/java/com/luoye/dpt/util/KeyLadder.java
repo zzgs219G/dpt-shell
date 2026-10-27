@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.cert.Certificate;
@@ -129,7 +130,14 @@ public final class KeyLadder {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             md.update(seedToBytes(seed));
-            md.update(ByteBuffer.allocate(4).putInt((int) crc32Text).array());
+            // ⚠️ 必须 LITTLE_ENDIAN。C 侧（dpt_keyladder.c）是
+            // mbedtls_sha256_update(&ctx, &text_crc, 4)，即按 ARM 原生小端
+            // 写入；ByteBuffer 默认 BIG_ENDIAN，两边字节序不同会让 master
+            // 不同 → key 不同 → 运行期解不开 .bitcode（2026-10-27 真机 SIGABRT）。
+            // 历史上对拍测试一直用 crc=0，而 0 的大端小端字节相同，把这个
+            // bug 完全掩盖了；对拍必须用非零 CRC。
+            md.update(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt((int) crc32Text).array());
             md.update(MASTER_BID.getBytes(StandardCharsets.US_ASCII));
             return md.digest();
         } catch (Exception e) {

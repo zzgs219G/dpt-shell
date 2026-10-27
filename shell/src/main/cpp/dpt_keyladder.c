@@ -31,6 +31,14 @@
 #include "mbedtls/hkdf.h"
 #include "dpt_cert.h"
 
+/* ⚠️ 不能用 common/dpt_log.h：那个头是 C++ 专用（含 <cstring> 和 inline
+ * 函数），本文件是纯 C，include 会编译失败。这里只订一个最小的错误日志宏，
+ * 与 ELOG 语义一致（release 也保留），tag 与全局一致便于 logcat 过滤。 */
+#include <android/log.h>
+#define KL_TAG "dpt_native"
+#define KL_ELOG(...) \
+    __android_log_print(ANDROID_LOG_ERROR, KL_TAG, "[keyladder] " __VA_ARGS__)
+
 /* 编译期随机种子：由构建脚本注入，每个 dpt-shell 版本不同。
  * 默认值是"未注入"的哨兵 —— 生产构建必须由 CMake 传 -DDPT_KL_SEED
  * 覆盖它，否则等于全 App 共享一把锁。 */
@@ -513,16 +521,35 @@ static int kl_find_apk(const char *so_path, char *out, size_t cap) {
 int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) {
     if (out == NULL) return -1;
 
+    /* ⚠️ 每一处失败都必须带原因出日志。此前这里只有调用方一句
+     * "derive section key failed" + abort()，真机闪退时无法判断是
+     * APK 路径、包名、证书还是 .text CRC 出的问题（2026-10-27 实测踩过）。 */
     char apk[512] = {0};
     char pkg[256] = {0};
-    if (kl_find_apk(so_path, apk, sizeof(apk)) != 0) return -1;
-    if (kl_read_package(pkg, sizeof(pkg)) != 0) return -1;
+    if (kl_find_apk(so_path, apk, sizeof(apk)) != 0) {
+        KL_ELOG("find apk failed (so_path=%s)", so_path ? so_path : "(null)");
+        return -1;
+    }
+    if (kl_read_package(pkg, sizeof(pkg)) != 0) {
+        KL_ELOG("read package failed");
+        return -1;
+    }
 
     dpt_cert_t cert;
     int rc = dpt_cert_first_signer(apk, &cert);
-    if (rc != 0) return -1;
+    if (rc != 0) {
+        KL_ELOG("extract cert failed rc=%d (apk=%s)", rc, apk);
+        return -1;
+    }
+
+    /* CRC 单独算一遍用于诊断：dpt_kl_derive 内部还会再算一次，
+     * 这里只打印，不参与派生 —— 保持一致（同一路径同一文件）。 */
+    uint32_t text_crc = 0;
+    int crc_rc = kl_text_crc_from_so(so_path, &text_crc);
 
     rc = dpt_kl_derive(cert.der, cert.der_len, pkg, strlen(pkg), so_path, out);
+    KL_ELOG("apk=%s pkg=%s cert_len=%zu crc_rc=%d text_crc=0x%08x derive_rc=%d",
+         apk, pkg, cert.der_len, crc_rc, text_crc, rc);
     dpt_cert_free(&cert);
     return rc;
 }

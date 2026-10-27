@@ -49,6 +49,54 @@ public class KeyLadderTest {
                 C_SIDE_EXPECTED, HexUtils.toHexString(key));
     }
 
+    /**
+     * 回归（2026-10-27 真机 SIGABRT）：master 里的 CRC32 必须是**小端**。
+     *
+     * <p>C 侧是 {@code mbedtls_sha256_update(&ctx, &text_crc, 4)}，按 ARM 原生
+     * 小端写入；Java 侧曾用 {@code ByteBuffer.allocate(4).putInt(...)}，而
+     * ByteBuffer 默认 BIG_ENDIAN —— 两侧字节序不同 → master 不同 → key 不同
+     * → 运行期解不开 .bitcode，真机在 init_array 里直接 abort（日志：
+     * {@code derive section key failed (.bitcode) — fail-closed}）。
+     *
+     * <p>为什么旧对拍测试没抓到：{@link #deriveKey_matchesCSide} 用的
+     * {@code TEST_CRC = 0}，而 0 的大端/小端字节完全相同，字节序错误被完全
+     * 掩盖。所以这里必须用**非零 CRC**，并且期望值来自真实链路实测。
+     *
+     * <p>期望值来源：so=libxixin.so(arm64, v1.2.5)、
+     * seed=0xc609e0900507cc35、CRC32(.text)=0x67dc4c31、
+     * cert=真实签名证书 DER、pkg=com.xixin.box。
+     * 该向量同时被宿主 C 侧与 Python 独立实现验证过（三方一致）。
+     */
+    @Test
+    public void computeMaster_crcIsLittleEndian() {
+        long seed = 0xc609e0900507cc35L;
+        long crc = 0x67dc4c31L;
+
+        // 直接用真实证书：找不到就跳过（测试环境不该依赖外部文件）。
+        File apk = null;
+        for (String c : new String[]{
+                System.getenv("TEST_APK"),
+                "/storage/emulated/0/常用/工作台😡/简盒-正式版-v2.1.2_212-20261025-0704-a8403a9 (1)_sign.apk"}) {
+            if (c != null && new File(c).isFile()) { apk = new File(c); break; }
+        }
+        if (apk == null) {
+            System.out.println("⏭ 跳过：未找到测试 APK（设 TEST_APK 环境变量可启用）");
+            return;
+        }
+        byte[] cert;
+        try {
+            cert = KeyLadder.extractFirstCertDer(apk);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        assertNotNull(cert);
+
+        byte[] key = KeyLadder.deriveKey(seed, crc, cert, "com.xixin.box");
+        assertEquals("非零 CRC 时 Java 侧必须与 C 侧 / Python 侧三方一致"
+                        + "（若不符，先查 master 里 CRC 的字节序）",
+                "7be0421244525b5b24d70356a89a398e", HexUtils.toHexString(key));
+    }
+
     @Test
     public void deriveKey_isDeterministic() {
         byte[] a = KeyLadder.deriveKey(TEST_SEED, TEST_CRC, TEST_CERT, TEST_PKG);
