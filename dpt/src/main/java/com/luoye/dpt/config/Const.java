@@ -58,6 +58,22 @@ public class Const {
      * 运行期经 JniBridge.gseed() 交给桩类。不传 = 未启用联动。 */
     public static final String OPTION_STUB_SEED_LONG = "stub-seed";
 
+    /* --cert-source <已签名APK>：段加密派生链用的证书来源。
+     *
+     * 为什么需要它（2026-10-27 事故）：.bitcode 段密钥里混了证书 DER，
+     * 运行期从【已安装 APK】提。打包侧必须拿到【最终签名会用】的那张证书。
+     *
+     * 原实现从 -f 的输入 APK 提，在 apk-protect-action 这条链路上必然失败：
+     * 该流水线契约是"全程不签名，开发者用上传时的 keystore 重签"，所以喂给
+     * dpt 的是回编后的【未签名】中间包 aligned.apk —— 没有 APK Signing Block，
+     * 提不到证书，直接 fail-fast。
+     *
+     * 正解是复用流水线已有的锚点：上传的原始 APK（已用目标 keystore 签名）
+     * 的证书，与 sigcheck 提取的指纹同源，也与开发者重签用的证书一致。
+     *
+     * 不传 = 从 -f 输入 APK 提（单机直用 dpt 时行为不变，向后兼容）。 */
+    public static final String OPTION_CERT_SOURCE_LONG = "cert-source";
+
     public static final String OPTION_SMALLER = "S";
     public static final String OPTION_SMALLER_LONG = "smaller";
 

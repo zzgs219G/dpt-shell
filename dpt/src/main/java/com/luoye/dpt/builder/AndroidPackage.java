@@ -75,6 +75,8 @@ public abstract class AndroidPackage {
         public String extraDexPath = null;
         /* --stub-seed：字符串桩的密钥流种子（16 位 hex；null = 未启用联动） */
         public String stubSeed = null;
+        /* --cert-source：段加密派生链用的证书来源 APK（null = 用 -f 输入） */
+        public String certSourcePath = null;
 
         public Builder filePath(String path) {
             this.filePath = path;
@@ -136,6 +138,11 @@ public abstract class AndroidPackage {
             return this;
         }
 
+        public Builder certSourcePath(String certSourcePath) {
+            this.certSourcePath = certSourcePath;
+            return this;
+        }
+
         public Builder debuggable(boolean debuggable) {
             this.debuggable = debuggable;
             return this;
@@ -189,6 +196,8 @@ public abstract class AndroidPackage {
     private String extraDexPath = null;
     /* --stub-seed：字符串桩密钥流种子（16 位 hex；null = 未启用联动） */
     private String stubSeed = null;
+    /* --cert-source：段加密派生链用的证书来源 APK（null = 用输入 APK） */
+    private String certSourcePath = null;
 
     public AndroidPackage(Builder builder) {
         setFilePath(builder.filePath);
@@ -209,6 +218,7 @@ public abstract class AndroidPackage {
         setPlain(builder.plain);
         setExtraDexPath(builder.extraDexPath);
         setStubSeed(builder.stubSeed);
+        setCertSourcePath(builder.certSourcePath);
     }
 
     /**
@@ -599,6 +609,18 @@ public abstract class AndroidPackage {
         this.stubSeed = stubSeed;
     }
 
+    public void setCertSourcePath(String certSourcePath) {
+        this.certSourcePath = certSourcePath;
+    }
+
+    /** 段加密派生链要读证书的那个 APK：优先 --cert-source，否则用 -f 输入。 */
+    private File getCertSourceFile() {
+        if (certSourcePath != null && !certSourcePath.isEmpty()) {
+            return new File(certSourcePath);
+        }
+        return new File(getFilePath());
+    }
+
     public void setExtraDexPath(String extraDexPath) {
         this.extraDexPath = extraDexPath;
     }
@@ -722,7 +744,11 @@ public abstract class AndroidPackage {
          * 现在 key 由派生链算出、不落盘：
          *   key    = HKDF(master, SHA256(certDER), "dpt-sec-v1"+pkg)
          *   master = SHA256(DPT_KL_SEED || CRC32(.text) || "dpt-kl-v1")
-         *   · certDER 从【输入 APK】提（运行期设备上读的是同一个证书）
+         *   · certDER 从【已签名 APK】提（运行期设备上读的是同一个证书）。
+         *           默认取 -f 输入；若输入是未签名中间包（apk-protect-action
+         *           流水线契约：产出未签名、开发者重签），必须用
+         *           --cert-source 指向上传时的原始已签名 APK —— 那张证书
+         *           与 sigcheck 的指纹同源，也与重签用的一致。
          *   · seed    从 shell-files/keyladder-seed.txt 读。它由 root
          *              build.gradle 生成并持久化，shell/build.gradle 用
          *              -DDPT_KL_SEED 传给 4 个 ABI —— 打包侧与运行期
@@ -734,15 +760,18 @@ public abstract class AndroidPackage {
          * 两侧一致性由 KeyLadderTest 的 9 项断言锁定。 */
         String seed = readKeyladderSeed();
         String pkg = getPackageName();
+        File certApk = getCertSourceFile();
         byte[] certDer = null;
         try {
-            certDer = com.luoye.dpt.util.KeyLadder.extractFirstCertDer(new File(getFilePath()));
+            certDer = com.luoye.dpt.util.KeyLadder.extractFirstCertDer(certApk);
         } catch (Exception e) {
-            LogUtils.error("派生链：从 APK 提证书失败: %s", e.getMessage());
+            LogUtils.error("派生链：从 APK 提证书失败(%s): %s", certApk, e.getMessage());
         }
         if (certDer == null) {
             throw new IllegalStateException(
-                    "派生链：无法从输入 APK 提取证书 DER，拒绝退回明文 key 方案。");
+                    "派生链：无法从 APK 提取证书 DER: " + certApk.getAbsolutePath()
+                    + "\n  若输入包未签名（流水线契约是产出未签名包），请用"
+                    + " --cert-source 指向【已用目标 keystore 签名】的原始 APK。");
         }
         if (pkg == null || pkg.isEmpty()) {
             throw new IllegalStateException("派生链：包名为空");
