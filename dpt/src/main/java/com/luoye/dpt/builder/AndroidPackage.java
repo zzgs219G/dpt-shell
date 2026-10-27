@@ -456,17 +456,35 @@ public abstract class AndroidPackage {
     /**
      * Same HMAC-SHA256 key as native read_shell_config aes_key.
      */
+    /**
+     * 指令载荷（dex insns）的 ChaCha20 密钥。
+     *
+     * 【2026-10-27 改】原实现 = HMAC(encKey, pkg+"_"+buildKey)，
+     * encKey 是打包期随机值，运行期从导出符号 DPT_UNKNOWN_DATA 取回。
+     * P0 删掉该符号后，运行期只能拿到派生链材料 —— 于是这条链断了：
+     * 打包用旧公式、运行期用新材料，dex 载荷块 native 侧 inflate 全失败
+     * （真机日志：materializeBlock() block 12 inflate failed: comp=56269
+     * raw=94408）。
+     *
+     * 现在改为与配置解密材料共用同一条派生链的前 32 字节（aes_key 部分）：
+     *   material = HKDF(SHA256(seed||"dpt-cfg-master"), SHA256(certDER),
+     *                   "dpt-cfg-v1"+pkg, 48)
+     *   insnsKey = material[0..32]
+     * 运行期 g_shell_config.aes_key 正是这 32 字节，两侧天然一致。
+     *
+     * ⚠️ 为什么与配置 aes_key 复用同一个 key 是可以接受的：
+     *   两者都是"本包内的对称加密"，攻击者拿到一个就拿到另一个 —— 但
+     *   拿到它们的前提都是先攻破派生链（需要证书 + seed + 包名），
+     *   而 seed 不在 APK 里。真正的隔离点是派生链本身，不是这两把钥匙。
+     *   若将来要做域分离，给 insns 单独一个 info 前缀即可，记得两侧同改。
+     *
+     * 参数 randomKey（旧 encKey）不再参与派生，保留仅为调用点签名兼容。
+     */
     private byte[] deriveConfigAesKey(byte[] randomKey) {
-        String packageName = getPackageName();
-        if (packageName == null || packageName.isEmpty()) {
-            throw new IllegalStateException("package name is empty, cannot derive config aes key");
-        }
-        String buildKey = Dpt.getBuildKey();
-        if (buildKey == null || buildKey.isEmpty()) {
-            throw new IllegalStateException("dpt build key is missing, cannot derive config aes key");
-        }
-        String keyMaterial = packageName + "_" + buildKey;
-        return CryptoUtils.hmacSha256(randomKey, keyMaterial);
+        byte[] material = deriveConfigMaterial();
+        byte[] insnsKey = Arrays.copyOfRange(material, 0, 32);
+        Arrays.fill(material, (byte) 0);
+        return insnsKey;
     }
 
     /**
