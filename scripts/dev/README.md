@@ -2,7 +2,49 @@
 
 一条命令替代"装机 → 截图 → 逐条翻 logcat"，并**直接告诉你崩在哪一层**。
 
-只有这一件事。性能基准脚本的说明见 [benchmark.md](./benchmark.md)。
+本目录三个脚本：
+
+| 脚本 | 用途 | 频率 |
+|---|---|---|
+| `identify-combo.sh` | 判断产物来自哪个模块组合 | 拿到 APK 就先用 |
+| `verify-on-device.sh` | 真机功能冒烟，指出崩在哪层 | 每次改完都跑 |
+| `bench-*.sh` | 性能基准 | 只做优化时用（见 [benchmark.md](./benchmark.md)） |
+
+---
+
+## 0. identify-combo.sh（先判断组合）
+
+```bash
+scripts/dev/identify-combo.sh <apk>
+```
+
+**为什么第一步要做这个**：两个模块组合的故障定位路径完全不同——
+只勾 packer 崩了第一嫌疑是 dpt 自身三条链；全模块崩了要怀疑联动
+（桩进壳 dex、`gseed`、dex2c）。但两者在 dpt 侧的症状**都是
+`SIGABRT` + 一句 dpt 日志**，分不清就会查错方向。
+
+输出示例（全模块）：
+
+```
+✅ dpt 已加壳：assets/xixin/*/libxixin.so × 2
+libnc.so   : 存在 × 2（含 sigcheck/dex2c/envcheck）
+stringenc  : 有解密桩
+→ 判定：全模块（含 stringenc↔dex2c 联动）
+```
+
+判据：
+
+| 判据 | 只勾 packer | 全模块 |
+|---|---|---|
+| `lib/*/libnc.so` | ❌ | ✅ |
+| 壳 dex 含 `GAMMA`/`keyByte`/`mix64` | ❌ | ✅ |
+
+⚠️ **不能靠类名**：桩类名每包随机，实测全模块产物 `grep -c strdec` = 0。
+必须用桩骨架的结构不变量（那三个名字不参与随机化）。
+
+---
+
+## 1. verify-on-device.sh（功能冒烟）
 
 ## 用法
 
