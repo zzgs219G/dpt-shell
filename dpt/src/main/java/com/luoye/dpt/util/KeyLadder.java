@@ -133,7 +133,7 @@ public final class KeyLadder {
             // ⚠️ 必须 LITTLE_ENDIAN。C 侧（dpt_keyladder.c）是
             // mbedtls_sha256_update(&ctx, &text_crc, 4)，即按 ARM 原生小端
             // 写入；ByteBuffer 默认 BIG_ENDIAN，两边字节序不同会让 master
-            // 不同 → key 不同 → 运行期解不开 .bitcode（2026-10-27 真机 SIGABRT）。
+            // 不同 → key 不同 → 运行期解不开 .bitcode → 启动 SIGABRT。
             // 历史上对拍测试一直用 crc=0，而 0 的大端小端字节相同，把这个
             // bug 完全掩盖了；对拍必须用非零 CRC。
             md.update(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
@@ -160,15 +160,12 @@ public final class KeyLadder {
         return hkdfSha256(salt, master, info, KEY_LEN);
     }
 
-    /* ── 配置解密材料（2026-10-27，取代明文 encKey 方案）────────────────
+    /* ── 配置 + dex 载荷解密材料 ─────────────────────────────────────
      *
-     * 旧方案：aes_key = HMAC(encKey, pkg+"_"+buildKey)，iv = encKey 改两位，
-     *        而 encKey 明文写在导出符号 DPT_UNKNOWN_DATA 里 ——
-     *        readelf 定位 + dd 读 16 字节 + AES-CBC 即可解出 stub_seed。
-     *
-     * 新方案：与段密钥同一条派生链（同一 seed、同一证书），
-     *        但 master **不含 CRC32(.text)**：配置只有一份，而 4 个 ABI 的
-     *        so 各有不同 .text CRC，掺进去会导致同一配置在不同 ABI 上解不开。
+     * 与段密钥共用 seed 与证书，但 master **不含 CRC32(.text)**：
+     * 配置只有一份，而 4 个 ABI 的 so 各有不同 .text CRC，掺进去会导致
+     * 同一配置在不同 ABI 上解不开。逐字节契约见
+     * docs/交接文档-v1.3.2.md §2.2。
      *
      * 运行期对应 dpt_kl_derive_config_material()（dpt_keyladder.c）。
      */

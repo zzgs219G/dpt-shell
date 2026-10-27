@@ -32,11 +32,10 @@ std::optional<std::tuple<uint8_t *,size_t>> g_codeItemFileData;
 DPT_DATA_SECTION uint8_t DATA_SECTION_BITCODE[] = ".bitcode";
 DPT_DATA_SECTION uint8_t DATA_SECTION_RO_DATA[] = ".rodata";
 
-/* 注：DPT_UNKNOWN_DATA 已移除（2026-10-27）。
- *
- * 它曾是 encKey 的载体（导出符号，readelf 可定位、dd 可读），
- * 配置链改为证书派生链后不再需要。保留一个固定的哨兵只会给逆向者
- * 留一个叫得上名字的锚点，故整块删除，不做"留空"处理。 */
+/* 注：DPT_UNKNOWN_DATA 已删除，不要再加回来。
+ * 它是导出符号（readelf 可定位、dd 可读），曾用于携带密钥材料；
+ * 现在全部密钥由派生链现算，产物里不应存在任何密钥载体。
+ * 留一个"空哨兵"同样有害 —— 那是个叫得上名字的逆向锚点。 */
 
 ShellConfig g_shell_config;
 
@@ -276,24 +275,20 @@ void decrypt_section(const char* section_name, int temp_prot, int target_prot) {
     DLOGD("section name: %s, offset: %p, size: %d", section_name, (uint8_t *)offset, size);
     void *target = (u_char *)info.dli_fbase + offset;
 
-    /* ── RC4 密钥：从证书派生链取，不再读 DPT_UNKNOWN_DATA ──────────
+    /* ── RC4 密钥：由证书派生链现算，产物里不存在任何密钥材料 ────────
      *
-     * 原实现：rc4_init(&st, DPT_UNKNOWN_DATA, 16) —— 那把 key 明文躺在
-     * .data 段，readelf 找到符号就能 dd 出来，整条加密形同虚设。
+     *   k = HKDF(SHA256(seed || CRC32(.text) || "dpt-kl-v1"),
+     *            SHA256(APK证书DER), "dpt-sec-v1"+pkg, 16)
      *
-     * 现在：k = HKDF(master, SHA256(APK证书DER), "dpt-sec-v1"+pkg)。
-     *   证书从【已安装 APK】读（dpt_cert.c，纯 C，不经过 Java ——
-     *   本函数在 init_array 里跑，早于 JNI_OnLoad，没有 JNIEnv）。
-     *   包名从 /proc/self/cmdline 取（首个 ':' 前截断，子进程带
-     *   :remote 后缀，不截断会让子进程 fail-closed）。
+     * 证书从【已安装 APK】读（dpt_cert.c，纯 C —— 本函数在 init_array
+     * 里跑，早于 JNI_OnLoad，没有 JNIEnv）。包名从 /proc/self/cmdline
+     * 取并截到首个 ':' 前（子进程带 :remote 后缀，不截会让它们 fail-closed）。
      *
-     * ⚠️ 失败即 fail-closed：取不到证书/包名就不解密，段保持密文。
-     *    后续调用踩到密文 = SIGILL，app 起不来。这比"静默用一个错 key
-     *    解出乱码"好——乱码会以难以归因的方式崩，密文至少fail在明处。
+     * ⚠️ 失败即 fail-closed：取不到就不解密，段保持密文 → 后续调用踩到
+     *    密文 SIGILL。这比"用错 key 解出乱码"好 —— 乱码的崩溃难以归因。
      *
-     * ⚠️ 时序：本函数由 init_dpt() 调，那时 APK 已安装、路径可读。
-     *    但 read_shell_config()（JNI_OnLoad 里）还没跑，所以
-     *    g_shell_config.aes_key 尚不可用 —— 必须自己走派生链。 */
+     * ⚠️ 时序：此时 read_shell_config()（JNI_OnLoad）还没跑，
+     *    g_shell_config.aes_key 不可用，必须自己走派生链。 */
     uint8_t sec_key[DPT_KL_KEY_LEN];
     if (dpt_kl_derive_section_key(so_path.c_str(), sec_key) != 0) {
         ELOG("derive section key failed (%s) — fail-closed, section stays cipher", section_name);
@@ -488,11 +483,10 @@ DPT_ENCRYPT jobject replaceApplicationOnLoadedApk(JNIEnv *env, jclass __unused, 
 DPT_ENCRYPT static bool registerNativeMethods(JNIEnv *env) {
     const char *cls = g_shell_config.jni_class_name.c_str();
 
-    /* ⚠️ 查找失败必须立刻返回。
-     * 原实现只 DLOGF 一句就继续，把 nullptr 传给 RegisterNatives ——
-     * ART 直接 "JNI DETECTED ERROR IN APPLICATION: java_class == null"
-     * 并 abort，栈顶是 JNI_OnLoad，完全看不出真正的失败原因
-     * （2026-10-27 真机实证）。带诊断信息的正常失败比 ART 的断言好查得多。 */
+    /* ⚠️ 查找失败必须立刻返回，不能把 nullptr 传给 RegisterNatives ——
+     * 那会让 ART 抛 "JNI DETECTED ERROR: java_class == null" 并 abort，
+     * 栈顶只有 JNI_OnLoad，看不出真正的失败原因。
+     * 带诊断信息的正常失败（返回 JNI_FALSE）比 ART 的断言好查得多。 */
     if (g_shell_config.jni_class_name.empty()) {
         ELOG("registerNativeMethods: jni_class_name is EMPTY (shell config not read?)");
         if (env->ExceptionCheck()) env->ExceptionClear();
@@ -1033,18 +1027,12 @@ DPT_ENCRYPT void read_shell_config(JNIEnv *env) {
             std::string packageName(packageNameChs);
             env->ReleaseStringUTFChars(packageNameJstr, packageNameChs);
 
-            /* ── 配置解密材料：走证书派生链，不再读 DPT_UNKNOWN_DATA ─────
+            /* ── 配置解密材料：由证书派生链现算 ─────────────────────────
              *
-             * 旧方案（已废弃，2026-10-27 逆向实证）：
-             *   aes_key = HMAC(DPT_UNKNOWN_DATA, 16, pkg+"_"+buildKey)
-             *   iv      = DPT_UNKNOWN_DATA[0..16]
-             *   DPT_UNKNOWN_DATA 是导出符号，readelf 定位 + dd 读 16 字节即可，
-             *   再解 assets/xixin_config 就拿到 stub_seed（字符串加密全部种子）。
-             *   整条链 5 步、无需 root/调试器/脱壳。
-             *
-             * 现在：与 .bitcode 段密钥同一条派生链（同一 master、同一 salt），
-             * 只用 info 前缀做域分离（"dpt-cfg-v1" vs "dpt-sec-v1"）。
-             * 产物里不再存在任何配置密钥材料，DPT_UNKNOWN_DATA 可以彻底删除。
+             * material = [aes_key(32) || iv(16)]，与段密钥共用 seed 与证书，
+             * 但 master 不含 CRC32(.text)（配置只有一份，跨 ABI 必须一致）。
+             * 逐字节契约见 docs/交接文档-v1.3.2.md §2.2。
+             * 产物里不存在任何密钥材料 —— 不要改为读取某个符号。
              *
              * ⚠️ 时序：本函数在 JNI_OnLoad 里，晚于 init_array 的 .bitcode 解密，
              *    但两者都独立算 master（kl_compute_master 每次现算，不缓存），

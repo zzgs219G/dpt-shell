@@ -1,7 +1,7 @@
 #ifndef DPT_KEYLADDER_H
 #define DPT_KEYLADDER_H
 //
-// keyladder.h —— 壳 so 的段加密密钥派生链（自研，2026-10-26）
+// dpt_keyladder.h —— 密钥派生链接口（段密钥 / 配置+载荷）
 //
 // 【解决什么问题】
 //   原方案把 RC4 密钥（DPT_UNKNOWN_DATA）明文写在 so 的 .data 段里，
@@ -50,56 +50,38 @@
 extern "C" {
 #endif
 
-/* 派生标签（info 前缀）。改这里必须同步 Java 侧与对拍测试。
- * 为什么带 "-v1"：将来换派生算法时能通过版本号区分，老包仍能跑。
+/* ── 派生常量（info 前缀 / master 版本串）─────────────────────────────
  *
- * ⚠️ 这些常量不能以完整字面量出现在产物里（2026-10-27 逆向实测）：
- *   `strings libxixin.so | grep dpt-` 一条命令就能看到 "dpt-sec-v1"、
- *   "dpt-kl-v1"，等于把派生公式的结构告诉逆向者。
+ * 这些值必须与 Java 侧 KeyLadder 的对应常量逐字节一致，由三方对拍锁定。
+ * 值带 "-v1"：将来换派生算法时可区分版本，老包仍能跑。
  *
- *   曾经试过"拆成相邻两段字面量由编译器拼接"——【无效】：
- *   C 标准规定相邻字符串字面量在编译期拼接，产物里仍是完整的一份
- *   （v1.3.0 实测：四个常量串全部原样存在）。
+ * 存放方式：不写字面量，改存"位置相关掩码的密文"，运行期异或还原。
+ * 为什么：字面量会让 `strings libxixin.so | grep dpt-` 直接看到
+ * "dpt-sec-v1"/"dpt-kl-v1"，等于公开派生公式结构。
+ * restore 函数里必须用 volatile 取值 —— 否则优化器做常量传播，
+ * 会把明文算回 .rodata。
  *
- *   最终方案：以【位置相关掩码】存密文，运行期用 volatile 指针取值异或还原。
- *   volatile 是必需的 —— 否则优化器做常量传播，会把明文算回 .rodata
- *   （实测：不加 volatile 仍泄漏 "dpt-sec-"）。
- *
- *   能力边界（如实）：这挡的是静态 strings/二进制扫描；
- *   动态调试下断点看 kl_info_prefix() 的返回值仍能拿到明文。
- *   真正要藏住必须让 key 不依赖固定常量，那是另一层设计。 */
+ * 能力边界：只挡静态 strings/二进制扫描；动态调试试断点看返回值
+ * 仍能拿到明文。要真正藏住，key 就不能依赖固定常量（另一层设计）。
+ */
+#define DPT_KL_INFO_LEN 10              /* "dpt-sec-v1" */
+#define DPT_KL_CONFIG_INFO_LEN 10       /* "dpt-cfg-v1" */
+#define DPT_KL_MASTER_BID_LEN 9         /* "dpt-kl-v1" */
+#define DPT_KL_CONFIG_MASTER_BID_LEN 14 /* "dpt-cfg-master" */
 
-/* 密文 + 掩码：运行时还原成 "dpt-sec-v1"。 */
-#define DPT_KL_INFO_LEN 10
-#define DPT_KL_CONFIG_INFO_LEN 10
-#define DPT_KL_MASTER_BID_LEN 9
-#define DPT_KL_CONFIG_MASTER_BID_LEN 14
-
-/* 配置解密材料（aes_key/iv）的派生 info 前缀。
- *
- * 为什么配置也要走派生链（2026-10-27 逆向实证）：
- *   旧方案把 encKey 明文写进导出符号 DPT_UNKNOWN_DATA，逆向者
- *   `readelf -sW --dyn-syms | grep DPT_UNKNOWN_DATA` 定位后 dd 出 16 字节，
- *   再 HMAC 出配置 key、AES-CBC 解开 assets/xixin_config，直接拿到
- *   stub_seed（字符串加密的全部密钥流种子）。整条链 5 步、零 root。
- *   改走派生链后 so 里不再有任何配置密钥材料，该符号可以彻底删除。
- *
- * 与段密钥用不同前缀（域分离）：同一 master/cert 下两条链的 key 不可互推。 */
-/* 运行期还原 info 前缀 / master 版本串。
- * 为什么不用 #define 字符串：见上方说明（编译期拼接无效）。
- * out 需至少 len+1 字节；返回 out。 */
+/* 运行期还原上述常量。out 至少 len+1 字节；返回 out。 */
 const char *dpt_kl_info_prefix(char *out, size_t cap);
 const char *dpt_kl_config_info_prefix(char *out, size_t cap);
 const char *dpt_kl_master_bid(char *out, size_t cap);
 const char *dpt_kl_config_master_bid(char *out, size_t cap);
 
-/* 配置材料长度：aes_key 32 字节 + iv 16 字节 = 48。 */
+/* 配置解密材料长度：aes_key(32) + iv(16)。 */
 #define DPT_KL_CONFIG_MATERIAL_LEN 48
 
-/* master 长度。32 字节 = SHA256 输出长度，直接拿来做 HKDF 的 ikm。 */
+/* master 长度 = SHA256 输出长度，直接作为 HKDF 的 ikm。 */
 #define DPT_KL_MASTER_LEN 32
 
-/* 派生出的段密钥长度。16 字节 = RC4 key 长度（现有 RC4 实现按 16 用）。 */
+/* 段密钥长度 = 16（现有 RC4 实现按 16 字节用）。 */
 #define DPT_KL_KEY_LEN 16
 
 /* 结构定义在 dpt_keyladder.c，这里只暴露接口。

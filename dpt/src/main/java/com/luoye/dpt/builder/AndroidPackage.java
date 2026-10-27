@@ -459,26 +459,17 @@ public abstract class AndroidPackage {
     /**
      * 指令载荷（dex insns）的 ChaCha20 密钥。
      *
-     * 【2026-10-27 改】原实现 = HMAC(encKey, pkg+"_"+buildKey)，
-     * encKey 是打包期随机值，运行期从导出符号 DPT_UNKNOWN_DATA 取回。
-     * P0 删掉该符号后，运行期只能拿到派生链材料 —— 于是这条链断了：
-     * 打包用旧公式、运行期用新材料，dex 载荷块 native 侧 inflate 全失败
-     * （真机日志：materializeBlock() block 12 inflate failed: comp=56269
-     * raw=94408）。
-     *
-     * 现在改为与配置解密材料共用同一条派生链的前 32 字节（aes_key 部分）：
+     * 与配置解密材料共用同一条派生链的前 32 字节：
      *   material = HKDF(SHA256(seed||"dpt-cfg-master"), SHA256(certDER),
      *                   "dpt-cfg-v1"+pkg, 48)
      *   insnsKey = material[0..32]
-     * 运行期 g_shell_config.aes_key 正是这 32 字节，两侧天然一致。
+     * 运行期 g_shell_config.aes_key 正是这 32 字节，两侧天然同源。
      *
-     * ⚠️ 为什么与配置 aes_key 复用同一个 key 是可以接受的：
-     *   两者都是"本包内的对称加密"，攻击者拿到一个就拿到另一个 —— 但
-     *   拿到它们的前提都是先攻破派生链（需要证书 + seed + 包名），
-     *   而 seed 不在 APK 里。真正的隔离点是派生链本身，不是这两把钥匙。
-     *   若将来要做域分离，给 insns 单独一个 info 前缀即可，记得两侧同改。
+     * 复用同一个 key 是可接受的：两者前提都是先攻破派生链（需证书 + seed
+     * + 包名，而 seed 不在 APK 里），真正的隔离点是派生链本身。
+     * 若将来要域分离，给 insns 单独 info 前缀即可，记得两侧同改。
      *
-     * 参数 randomKey（旧 encKey）不再参与派生，保留仅为调用点签名兼容。
+     * 参数 randomKey 不再参与派生，保留仅为调用点签名兼容。
      */
     private byte[] deriveConfigAesKey(byte[] randomKey) {
         byte[] material = deriveConfigMaterial();
@@ -490,16 +481,8 @@ public abstract class AndroidPackage {
     /**
      * 加密并写出 shell config。
      *
-     * 【2026-10-27 改：配置解密材料改走证书派生链】
-     * 旧方案用 HMAC(encKey, pkg+"_"+buildKey) 派生 aes_key、encKey 改两位做 iv，
-     * 而 encKey 明文躺在导出符号 DPT_UNKNOWN_DATA 里。逆向实证的完整攻击链：
-     *   readelf -sW --dyn-syms | grep DPT_UNKNOWN_DATA   → 得到 symbol value
-     *   dd 读该地址 16 字节                               → encKey
-     *   HMAC + AES-CBC 解 assets/xixin_config             → stub_seed 等
-     * 5 步、无需 root/调试器/脱壳。
-     *
-     * 现在与 .bitcode 段密钥共用同一条派生链（同一 master、同一 salt），
-     * 只用 info 前缀做域分离（"dpt-cfg-v1"）。产物里不再有任何配置密钥材料。
+     * 解密材料由 {@link #deriveConfigMaterial()} 现算，产物里不留任何
+     * 密钥材料。逐字节契约见 docs/交接文档-v1.3.2.md §2.2。
      *
      * 参数 key 保留仅为签名兼容（Apk/Aab 两个调用点），不再参与派生。
      */
@@ -541,7 +524,7 @@ public abstract class AndroidPackage {
      *
      * 代价（如实记录）：配置链失去"改 .text 即自毁"的自绑定特性。
      * 它仍绑定 seed + 证书 + 包名，且产物里不再有任何密钥材料 ——
-     * 相比旧方案（key 明文躺在导出符号里）仍是数量级的提升。
+     * 仍绑 seed + 证书 + 包名，且产物里无任何密钥材料。
      */
     private byte[] deriveConfigMaterial() {
         String seed = readKeyladderSeed();
@@ -815,29 +798,17 @@ public abstract class AndroidPackage {
             return;
         }
 
-        /* ── 派生材料：证书 + 包名 + seed（缺一即 fail-fast）────────────
+        /* 段密钥派生材料：证书 + 包名 + seed，缺一即 fail-fast。
          *
-         * 原实现用 rc4Key 加密 .bitcode 后，把 key 明文写进 so 的
-         * DPT_UNKNOWN_DATA 符号 —— readelf 找到符号 + dd 读出 16 字节，
-         * 整条加密形同虚设。
+         *   key    = HKDF(SHA256(seed || CRC32(.text) || "dpt-kl-v1"),
+         *                 SHA256(certDER), "dpt-sec-v1"+pkg, 16)
          *
-         * 现在 key 由派生链算出、不落盘：
-         *   key    = HKDF(master, SHA256(certDER), "dpt-sec-v1"+pkg)
-         *   master = SHA256(DPT_KL_SEED || CRC32(.text) || "dpt-kl-v1")
-         *   · certDER 从【已签名 APK】提（运行期设备上读的是同一个证书）。
-         *           默认取 -f 输入；若输入是未签名中间包（apk-protect-action
-         *           流水线契约：产出未签名、开发者重签），必须用
-         *           --cert-source 指向上传时的原始已签名 APK —— 那张证书
-         *           与 sigcheck 的指纹同源，也与重签用的一致。
-         *   · seed    从 shell-files/keyladder-seed.txt 读。它由 root
-         *              build.gradle 生成并持久化，shell/build.gradle 用
-         *              -DDPT_KL_SEED 传给 4 个 ABI —— 打包侧与运行期
-         *              C 侧同一把 seed，不会 per-ABI 漂移。
-         *   · CRC32   由 SoSectionLocker 现算（链接后即固定；AGP 的
-         *              strip 只删 .symtab 不动 .text —— 已实测验证），
-         *              C 侧 dpt_keyladder.c 用同一段 .text 文件字节算。
+         * certDER 必须是【最终签名会用】的那张证书，因为运行期从已安装
+         * APK 提的是同一个。默认取 -f 输入；apk-protect-action 这条流水线
+         * 产出未签名包（开发者重签），喂进来的是未签名中间包，所以必须用
+         * --cert-source 指向上传时的原始已签名 APK。
          *
-         * 两侧一致性由 KeyLadderTest 的 9 项断言锁定。 */
+         * 逐字节契约见 docs/交接文档-v1.3.2.md §2，由 KeyLadderTest 锁定。 */
         String seed = readKeyladderSeed();
         String pkg = getPackageName();
         File certApk = getCertSourceFile();
@@ -878,16 +849,8 @@ public abstract class AndroidPackage {
                     throw new IllegalStateException(
                             "派生链：锁箱 " + soFile.getName() + " 失败", e);
                 }
-                // 不再调用 writeSoFileCryptKey()：DPT_UNKNOWN_DATA 已删除。
-                //
-                // 历史教训（两步都踩过，别再重演）：
-                //   · v1.2.3 删掉写入 → 配置解密链断裂 → 真机 java_class == null
-                //     abort（当时配置还依赖该符号）
-                //   · v1.2.9 恢复写入 → 真机能启动，但逆向者 readelf + dd
-                //     就能拿到 encKey，进而解出 stub_seed
-                // 正确解法不是"写不写"，而是【让配置链不再依赖任何落盘的 key】——
-                // 见 writeConfig() / deriveConfigMaterial()：配置材料改由
-                // 证书派生链现算，产物里不留任何密钥材料。
+                // 不写 DPT_UNKNOWN_DATA：该符号已删除，产物里不留任何密钥材料。
+                // 配置与载荷的密钥都由 deriveConfigMaterial() 现算，见下方。
                 if (locked) {
                     LogUtils.info("派生链加密完成: %s", soFile.getName());
                 }

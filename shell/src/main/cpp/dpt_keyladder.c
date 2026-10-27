@@ -1,5 +1,6 @@
 //
-// dpt_keyladder.c —— 壳 so 段加密密钥派生链（自研，2026-10-26）
+// dpt_keyladder.c —— 密钥派生链实现（段密钥 / 配置+载荷）
+// 契约与输入来源见 docs/交接文档-v1.3.2.md §2。改公式必须两侧同改。
 //
 // 设计依据见 dpt_keyladder.h。这里只写实现要点与踩过的坑。
 //
@@ -41,7 +42,7 @@
  * 日志就把这条路堵死。 */
 /* 宿主对拍（tests/test_keyladder_ossl.c）编译时用 -DDPT_KL_HOST_TEST 显式
  * 关掉日志：Termux 上 clang 也会定义 __ANDROID__ / __ANDROID_API__，靠环境
- * 宏判断不可靠（实测踩过），所以用测试自己声明的开关。 */
+ * 宏判断不可靠，所以用测试自己声明的开关。 */
 #ifdef DPT_KL_HOST_TEST
 #define KL_ELOG(...) do { (void) 0; } while (0)
 #else
@@ -64,10 +65,9 @@
 
 /* ── 派生常量：密文存放 + 运行期异或还原 ─────────────────────────────
  *
- * 为什么不用字符串字面量（含"拆成两段"）：C 标准要求相邻字面量在编译期
- * 拼接，产物里仍是完整的一份明文（v1.3.0 实测四个常量串全部原样存在）。
- * 这里改成位移相关掩码的密文表 + volatile 取值，优化器无法把它折叠回明文
- * （不加 volatile 实测仍会泄漏 "dpt-sec-" 这样的前缀片段）。
+ * 为什么不用字符串字面量：C 标准要求相邻字面量在【编译期】拼接，
+ * 产物里仍是完整的一份明文。故改为位置相关掩码的密文表 + volatile 取值
+ * —— volatile 必需，否则优化器做常量传播会把明文算回 .rodata。
  */
 #define KL_MASK_N 32
 
@@ -460,9 +460,8 @@ int dpt_kl_derive_with_master(const uint8_t master[DPT_KL_MASTER_LEN],
     if (pkg_len == 0) return -1;
     /* 证书 DER 长度护栏：下限 16（容纳最小 ASN.1 结构）、上限 8192
      * （远超真实证书的 ~1.8KB，防畸形输入把 SHA256 拖垮）。
-     * 为什么下限不定 100：真实证书虽 800~1800 字节，但宿主对拍测试
-     * 用 21 字节的证书前缀就能验证派生公式，把门槛定 100 会让测试
-     * 永远走不到真逻辑（本轮实测踩过）。 */
+     * 下限取 16 而非真实证书量级：宿主对拍用 21 字节的证书前缀即可验证
+     * 派生公式，门槛过高会让测试走不到真逻辑。 */
     if (cert_len < 16 || cert_len > 8192) return -2;
 
     /* salt = SHA256(certDER) */
@@ -669,7 +668,7 @@ static int kl_read_package(char *out, size_t cap) {
 /* 定位自身 APK 路径。三条来源，按可靠性排序：
  *
  *   ⓪  Java 写的提示文件：<so 所在目录>/apk-path
- *      —— 这是主路径。原因见下（2026-10-27 真机实测）。
+ *      —— 这是主路径，原因见下。
  *   ① /proc/self/maps 里含 "base.apk" 的行（ART 会映射 APK）
  *   ② so 路径反推：.../lib/<abi>/xxx.so → .../base.apk
  *
@@ -679,15 +678,13 @@ static int kl_read_package(char *out, size_t cap) {
  *       "[keyladder] find apk failed"，随后 fail-closed abort；
  *     · ② 壳 so 在 dataDir/dpt-libs/<abi>/，路径里没有 "/lib/"，反推不到。
  *   而 Java 侧 FileUtils.unzipLibs() 的入参就是 sourceDir（APK 绝对路径），
- *   由它把路径写到 so 同目录最可靠，且零 JNI、零时序依赖。
+ *   且必定早于 System.load，由它把路径传给 native 最可靠。
  */
 #define KL_APK_HINT_NAME "apk-path"
 
 /* Java 侧 setenv 的环境变量名（FileUtils.APK_ENV_NAME 必须一致）。
- * 为什么环境变量优先于文件：hint 文件与 so 同在一个受 SELinux/文件模式
- * 约束的私有目录里，实测"写了但 C 侧读不到"（v1.2.7 真机仍报 find apk
- * failed）。环境变量是纯进程内存，setenv 之后 getenv 必然可读，不经过
- * 文件系统，因此作为主路径；文件仍保留作兜底。 */
+ * 环境变量优先于文件：它不经过文件系统（私有目录受 SELinux/文件模式
+ * 约束，可能出现"写了但读不到"）；文件保留作兜底。 */
 #define KL_APK_ENV_NAME "DPT_APK_PATH"
 
 /* 读环境变量里的 APK 路径。返回 0 成功。 */
@@ -801,9 +798,9 @@ static int kl_find_apk(const char *so_path, char *out, size_t cap) {
 int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) {
     if (out == NULL) return -1;
 
-    /* ⚠️ 每一处失败都必须带原因出日志。此前这里只有调用方一句
-     * "derive section key failed" + abort()，真机闪退时无法判断是
-     * APK 路径、包名、证书还是 .text CRC 出的问题（2026-10-27 实测踩过）。 */
+    /* 每一处失败都必须带原因出日志：调用方只有一句
+     * "derive section key failed" + abort()，没有分步信息就无法判断是
+     * APK 路径、包名、证书还是 .text CRC 出的问题。 */
     char apk[512] = {0};
     char pkg[256] = {0};
     if (kl_find_apk(so_path, apk, sizeof(apk)) != 0) {
