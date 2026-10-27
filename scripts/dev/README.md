@@ -32,15 +32,27 @@ stringenc  : 有解密桩
 → 判定：全模块（含 stringenc↔dex2c 联动）
 ```
 
-判据：
+### 能判别的三类组合
 
-| 判据 | 只勾 packer | 全模块 |
-|---|---|---|
-| `lib/*/libnc.so` | ❌ | ✅ |
-| 壳 dex 含 `GAMMA`/`keyByte`/`mix64` | ❌ | ✅ |
+| 组合 | `assets/xixin/*/libxixin.so` | `libnc.so` | stringenc 桩 |
+|---|---|---|---|
+| 只勾 packer（dpt） | ✅ | ❌ | ❌ |
+| 全模块（含 packer） | ✅ | ✅ | ✅ |
+| **全模块但不勾 packer** | ❌ | ✅ | ✅ |
+| 未加壳原包 | ❌ | ❌ | ❌ |
 
-⚠️ **不能靠类名**：桩类名每包随机，实测全模块产物 `grep -c strdec` = 0。
-必须用桩骨架的结构不变量（那三个名字不参与随机化）。
+**注意第三类**：全模块但不勾 packer 时，产物**不是壳包** ——
+没有 `.bitcode`、没有 `xixin_config`、没有 `xixin_data`，
+业务 dex 也未被抽取。此时：
+
+- `[kl]` 日志**不会出现**（壳 so 不存在）
+- 拿它跑 `verify-on-device.sh` 会因「无 [kl] 日志」判 **FAIL**，
+  **那是预期的，不是缺陷**
+- 测试重点是桩能否正常解字符串（纯 Java 实现，不依赖 so）
+
+⚠️ **不能靠类名判断 stringenc**：桩类名每包随机，实测全模块产物
+`grep -c strdec` = 0。必须用桩骨架的结构不变量
+（`GAMMA`/`keyByte`/`mix64`，这三个名字不参与随机化）。
 
 ---
 

@@ -48,6 +48,19 @@ done
 [[ -f "$APK" ]] || die "APK 不存在: $APK"
 adb version >/dev/null 2>&1 || die "找不到 adb（不在 PATH）"
 
+# ── 前置检查：本脚本只适用于 packer 产物 ─────────────────────────────
+#
+# 为什么必须检查：全模块但不勾 packer 的产物**不是壳包**，
+# 没有壳 so → 不会打 [kl] 日志 → 会被判成"派生链失败"。
+# 那是假阳性，会把人引向错误方向（实测：我第一版就漏了这个检查）。
+if ! unzip -l "$APK" 2>/dev/null | grep -q 'assets/xixin/.*/libxixin\.so'; then
+  echo "⚠️  这不是 dpt 加壳产物（无 assets/xixin/*/libxixin.so）" >&2
+  echo "   本脚本只适用于【勾了 packer】的产物。" >&2
+  echo "   若你想验证的是 sigcheck/dex2c/stringenc 组合，请改用：" >&2
+  echo "     scripts/dev/identify-combo.sh <apk>    # 先确认它是什么组合" >&2
+  exit 2
+fi
+
 # ── 设备 ─────────────────────────────────────────────────────────────
 if [[ -n "$DEVICE" ]]; then
   echo "▶ 连接设备 $DEVICE"
