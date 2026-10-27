@@ -39,6 +39,7 @@ public class FileUtils {
         // 而 Java 这一层本来就知道 sourceDir（它就是本方法的入参），
         // 写下来是最可靠、零额外成本的做法。
         writeApkPathHint(sourceDir, libsOutDir);
+        setApkPathEnv(sourceDir);
 
         FileUtils.unzipInNeeded(sourceDir,
                 "assets/" + Global.ZIP_LIB_DIR + "/" + abiName + "/" + Global.SHELL_SO_NAME,
@@ -47,6 +48,17 @@ public class FileUtils {
 
     /** C 侧读的 APK 路径提示文件名（与 dpt_keyladder.c 的 KL_APK_HINT_NAME 一致）。 */
     private static final String APK_HINT_NAME = "apk-path";
+
+    /**
+     * C 侧读的 APK 路径环境变量名（与 dpt_keyladder.c 的 KL_APK_ENV_NAME 一致）。
+     *
+     * 为什么同时用环境变量而不只用文件：文件写在 {@code dataDir/dpt-libs/<abi>/}，
+     * 该目录与 so 同权限域，写与读都受 SELinux/文件模式影响；环境变量在
+     * {@code System.load} 之前由本进程 setenv 设置，native 侧 getenv 直读，
+     * 不经过文件系统，也不受 0444 只读影响（曾把 hint 文件 chmod 0444，
+     * 覆盖安装时写不进去，只能靠 catch 吞掉 —— 那种"看起来写了其实没写"
+     * 的静默失败正是最难查的）。两条路都留：环境变量优先，文件兜底。 */
+    private static final String APK_ENV_NAME = "DPT_APK_PATH";
 
     /**
      * 把 APK 绝对路径写到 {@code <libsOutDir>/apk-path}。
@@ -73,6 +85,21 @@ public class FileUtils {
             }
         } catch (Throwable e) {
             Log.w(TAG, "write apk path hint failed: " + apkPath, e);
+        }
+    }
+
+    /**
+     * 把 APK 路径写进进程环境变量，供 native 侧 init_array 读取。
+     * 必须在 {@code System.load} 之前调用（本类三个调用点都满足）。
+     */
+    private static void setApkPathEnv(String apkPath) {
+        if (apkPath == null || apkPath.isEmpty()) {
+            return;
+        }
+        try {
+            Os.setenv(APK_ENV_NAME, apkPath, true);
+        } catch (Throwable e) {
+            Log.w(TAG, "setenv " + APK_ENV_NAME + " failed", e);
         }
     }
 

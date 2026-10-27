@@ -491,6 +491,24 @@ static int kl_read_package(char *out, size_t cap) {
  */
 #define KL_APK_HINT_NAME "apk-path"
 
+/* Java 侧 setenv 的环境变量名（FileUtils.APK_ENV_NAME 必须一致）。
+ * 为什么环境变量优先于文件：hint 文件与 so 同在一个受 SELinux/文件模式
+ * 约束的私有目录里，实测"写了但 C 侧读不到"（v1.2.7 真机仍报 find apk
+ * failed）。环境变量是纯进程内存，setenv 之后 getenv 必然可读，不经过
+ * 文件系统，因此作为主路径；文件仍保留作兜底。 */
+#define KL_APK_ENV_NAME "DPT_APK_PATH"
+
+/* 读环境变量里的 APK 路径。返回 0 成功。 */
+static int kl_read_apk_env(char *out, size_t cap) {
+    if (out == NULL || cap == 0) return -1;
+    const char *v = getenv(KL_APK_ENV_NAME);
+    if (v == NULL || v[0] != '/') return -1;
+    size_t len = strlen(v);
+    if (len + 1 > cap) return -1;
+    memcpy(out, v, len + 1);
+    return 0;
+}
+
 /* 从 so 所在目录读 apk-path 提示文件。返回 0 成功。 */
 static int kl_read_apk_hint(const char *so_path, char *out, size_t cap) {
     if (so_path == NULL || out == NULL || cap == 0) return -1;
@@ -527,7 +545,12 @@ static int kl_read_apk_hint(const char *so_path, char *out, size_t cap) {
 }
 
 static int kl_find_apk(const char *so_path, char *out, size_t cap) {
-    /* ⓪ Java 写的提示文件（主路径，见函数上方说明） */
+    /* ⓪-1 Java setenv 的环境变量（主路径：不经文件系统，必然可读） */
+    if (kl_read_apk_env(out, cap) == 0) {
+        return 0;
+    }
+
+    /* ⓪-2 Java 写的提示文件（兜底：环境变量不可用时） */
     if (kl_read_apk_hint(so_path, out, cap) == 0) {
         return 0;
     }
@@ -592,7 +615,14 @@ int dpt_kl_derive_section_key(const char *so_path, uint8_t out[DPT_KL_KEY_LEN]) 
     char apk[512] = {0};
     char pkg[256] = {0};
     if (kl_find_apk(so_path, apk, sizeof(apk)) != 0) {
-        KL_ELOG("find apk failed (so_path=%s)", so_path ? so_path : "(null)");
+        /* 失败时把三条路径各自的"为什么"都打出来。此前只打一句
+         * find apk failed，无法区分是环境变量没设、hint 文件没写成、
+         * 还是 maps 里没有 base.apk —— 真机排障为此多花了两轮。 */
+        const char *env = getenv(KL_APK_ENV_NAME);
+        KL_ELOG("find apk failed: so_path=%s env(%s)=%s maps_hit=no hint_file=unreadable",
+                so_path ? so_path : "(null)",
+                KL_APK_ENV_NAME,
+                (env != NULL && env[0] != '\0') ? env : "(unset)");
         return -1;
     }
     if (kl_read_package(pkg, sizeof(pkg)) != 0) {
