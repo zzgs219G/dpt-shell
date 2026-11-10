@@ -119,6 +119,46 @@ else()
     #    隐患（本次改动不引入也不修复），须由 CI + 真机验证兜底。
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL -Wl,--gc-sections")
     message("closed log & stripped so symbols (gc-sections on)")
+
+    # ── 关异常/RTTI/展开表（2026-11-10）────────────────────────────────
+    # 收益（arm64 实测 474,672 → 预期约 290 KB）：
+    #   itanium demangler        98,660 B   ← 死代码，见下
+    #   .eh_frame + hdr          63,024 B
+    #   libunwind                16,904 B
+    #   .gcc_except_table         6,224 B
+    #
+    # ## 为什么可以关（每条都用符号表/反汇编验证过，不是推测）
+    #
+    # 1) demangler 98,660 B 是死代码：
+    #    · 唯一入口 __cxa_demangle（仅 1528 B），全 so 反汇编搜 bl 调用 = 0 处
+    #    · 它是被 libc++abi 的 cxa_default_handlers.cpp.o 拉进来的 ——
+    #      那个函数只做"异常未捕获时打印可读类型名"，为一个提示文字占 98 KB 不值
+    #    · 我们代码里 typeid / type_info::name() 用量 = 0
+    #    · 关掉后未捕获异常的提示从 'std::bad_alloc' 变成 'St9bad_alloc'，仅此而已
+    #
+    # 2) .eh_frame（53 KB）与 libunwind（17 KB）可以关：
+    #    · 我们代码里 backtrace() / execinfo.h / libunwind API 用量 = 0
+    #    · 反汇编里 libunwind 符号被引用次数 = 0
+    #    · 壳的 crash handler（dpt_install_crash_handler）**不做栈回溯** ——
+    #      它只打印自己维护的状态变量（g_last_location / mprotect / methodIdx），
+    #      然后把信号转发给系统，由 **debuggerd 生成 tombstone**。
+    #      debuggerd 是系统进程，用它自己的 libunwind，与我们的 .eh_frame 无关。
+    #    · .eh_frame 的唯一用途是"C++ 异常在壳内部抛出并被捕获时做栈展开"，
+    #      而全仓库 try/catch/throw 用量 = 0（脚本排除注释后统计）
+    #
+    # 3) 第三方库均无异常依赖（逐个 grep 确认）：
+    #    bhook（纯 C）、Dobby（source/ 无 try/throw）、minizip（纯 C）
+    #
+    # ## 风险（如实）
+    #
+    # · std::string 分配失败时 libc++ 内部会 throw bad_alloc —— 无异常模式下
+    #   改为 abort()。但壳里没有 catch，抛出来本来就是 terminate，行为等价。
+    # · 若将来给壳加 try/catch，必须同时去掉这两个 flag，否则 catch 不生效。
+    # · 需要真机验证：patchClass 是类加载热路径，任何异常行为变化都会导致
+    #   App 起不来（CI 只能验编译，验不了运行期）。
+    set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables -fno-unwind-tables")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables -fno-unwind-tables")
+    message("exceptions/rtti/unwind tables OFF (-fno-exceptions -fno-rtti -fno-unwind-tables)")
 endif()
 
 message("so name: ${SO_NAME}")
@@ -169,8 +209,22 @@ target_compile_options(${SO_NAME} PRIVATE
         -Wall
         -Wextra
         -Werror
+        # ── 关异常/RTTI/展开表（2026-11-10）──────────────────────────
+        # 为什么必须在这里再写一遍（而不是只靠上面的 CMAKE_C/CXX_FLAGS）：
+        #   NDK 工具链默认往 C/CXX_FLAGS 里加 `-funwind-tables`
+        #   （CI 日志实测：-fdata-sections -ffunction-sections -funwind-tables）。
+        #   它与 -fno-unwind-tables 冲突，谁在命令行后面谁生效。
+        #   target_compile_options 的参数排在 NDK 默认值之后，能确保压住它。
+        #
+        # 这几项只为体积：见上面 set(CMAKE_CXX_FLAGS ...) 处的完整论证
+        # （demangler 死代码 98,660 B + .eh_frame 53 KB + libunwind 17 KB）。
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>
+        -fno-asynchronous-unwind-tables
+        -fno-unwind-tables
 )
-target_link_options(${SO_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
+target_link_options(${SO_NAME} PRIVATE
+        "-Wl,-z,max-page-size=16384"
+)
 
 target_link_libraries(${SO_NAME}
             ${log-lib}
