@@ -434,6 +434,12 @@ DPT_ENCRYPT jlong get_stub_seed_export(JNIEnv *env, jclass) {
  * 是最难发现的那种失败）。
  *
  * 实测证据：v1.6.0-strkey 产物 llvm-nm -D 显示 `_Z10ncg_strkeyv`。
+ *
+ * ## 📖 完整跨仓库契约见
+ *
+ * `artifact-pipeline/docs/模块联动关系.md` 联动⑧ + §1.0「跨仓库参数总表」。
+ * 那里有 seed 的完整旅程（谁生成、谁消费、存在哪、丢失会怎样）。
+ * 改本函数或改 `--stub-seed` 语义前请先看那张表。
  */
 extern "C" __attribute__((used, retain, visibility("default")))
 uint64_t ncg_strkey(void) {
