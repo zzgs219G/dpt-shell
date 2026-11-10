@@ -38,6 +38,22 @@ set(MZ_OPENSSL OFF CACHE BOOL "" FORCE)
 
 set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 
+# ── mbedtls 最小配置（2026-11-10）──────────────────────────────────────
+# 上游默认 config 开 142 个模块（TLS/X509/RSA/11 条椭圆曲线/bignum/DRBG…），
+# 壳只用 5 个：SHA-256、MD/HMAC、HKDF、AES-CBC、ChaCha20。
+# 用 -DMBEDTLS_CONFIG_FILE 整体替换默认 config（而不是逐个 #undef），
+# 默认文件因此完全不参与编译。
+#
+# ⚠️ 必须在 add_subdirectory(external/mbedtls) **之前**设置 ——
+#    它是在 mbedtls 的 CMakeLists 里被读取的（MBEDTLS_CONFIG_FILE CACHE 变量）。
+# ⚠️ 改密钥链（dpt_keyladder.c / dpt_build_config.c）时必须同步检查
+#    本配置是否少开了模块 —— 少了会在链接期报 undefined reference（硬失败，
+#    比运行期崩好），但若某个模块只在运行期某分支用到，则会静默崩。
+set(MBEDTLS_CONFIG_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/dpt_mbedtls_config.h"
+    CACHE FILEPATH "dpt minimal mbedtls config" FORCE)
+message("mbedtls config: ${MBEDTLS_CONFIG_FILE} (minimal, 5 modules)")
+
 add_subdirectory(external/mbedtls)
 include_directories(external/mbedtls/include)
 
