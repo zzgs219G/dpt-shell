@@ -425,8 +425,17 @@ DPT_ENCRYPT jlong get_stub_seed_export(JNIEnv *env, jclass) {
  *   · 暴露的信息有限：知道「这里取种子」不等于知道种子是什么
  *   · 后续若要随机化，做法与桩名一致（protect.sh 生成 → 经 --stub-seed
  *     同一条通道传给 dpt → 构建期写进两侧）
+ *
+ * ## ⚠️ 必须 extern "C"（2026-11-10 实测踩到）
+ *
+ * 本文件是 .cpp，不加 extern "C" 时符号会被 C++ name mangling 成
+ * _Z10ncg_strkeyv，而 libnc.so 侧 dlsym 找的是字面量 "ncg_strkey" →
+ * 永远找不到 → 联动静默失效（回退到编译期常量，功能正常但联动不成立，
+ * 是最难发现的那种失败）。
+ *
+ * 实测证据：v1.6.0-strkey 产物 llvm-nm -D 显示 `_Z10ncg_strkeyv`。
  */
-__attribute__((used, retain, visibility("default")))
+extern "C" __attribute__((used, retain, visibility("default")))
 uint64_t ncg_strkey(void) {
     return g_shell_config.stub_seed;
 }
