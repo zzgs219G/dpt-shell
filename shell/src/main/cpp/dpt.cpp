@@ -384,6 +384,53 @@ DPT_ENCRYPT jlong get_stub_seed_export(JNIEnv *env, jclass) {
     return (jlong) g_shell_config.stub_seed;
 }
 
+/* ── 字符串密钥种子导出（2026-11-10，纯 C 桩与壳的联动）───────────────
+ *
+ * 纯 C 桩（artifact-pipeline 的 --stringenc-native）在 libnc.so 里解密字符串，
+ * 而它的密钥材料此前是【编译期常量】（nc_strdec_cfg.h 的 NC_STRDEC_KEY_BYTES）。
+ * 后果：脱壳后即使丢掉壳 so（assets/xixin 下的 libxixin.so），libnc.so
+ * 仍能独立解密 —— 「必须带着壳运行」这条联动不成立。
+ *
+ * 本函数把种子改为【运行期从壳取】，与服务 Java 桩的 gseed() 同源
+ * （都是 g_shell_config.stub_seed），但走【C 符号】而不是 JNI：
+ *   · Java 桩：SEED = JniBridge.gseed()      —— 要跨 JNI，纯 C 桩没有 JNIEnv 时用不了
+ *   · 纯 C 桩：ncg_strkey() 经 dlsym 拿到    —— 纯 C 侧自取，不依赖 JVM 环境
+ *
+ * ## 为什么返回 uint64 而不是写进调用方缓冲区
+ *
+ * 保持与 gseed() 的语义一致（都是那 8 字节种子），派生交给 libnc.so 侧做。
+ * 壳这边只管「种子是什么」，不认识「密钥怎么算」—— 两侧职责单一，
+ * 任一侧改派生算法不会撞车。
+ *
+ * ## 保密边界（如实）
+ *
+ * 种子在这里是明文返回的。它的保密性由两点保证：
+ *   ① 本函数在 libxixin.so 的 .bitcode 加密段里（构建期 RC4，运行期自解）
+ *   ② 种子本体在 assets/xixin_config（AES-CBC 加密），由证书派生的 key 解开
+ * 也就是说：拿到 libxixin.so 且能解开 .bitcode 与 xixin_config，才能得到种子。
+ * 这与 gseed() 的边界完全相同，没有引入新的弱点。
+ *
+ * ## 为什么必须 used, retain
+ *
+ * 本 so 开了 -Wl,--gc-sections（2026-10 补）。没有 used/retain 时，
+ * 若链接器判定本符号无人引用（libnc.so 是【运行期 dlsym】找它，
+ * 链接期看不到引用），就会把它整段回收 → dlsym 找不到 → 全体解不开。
+ * 这是 --gc-sections 的经典陷阱，必须显式保住。
+ *
+ * ## 符号名
+ *
+ * 名字是固定的 ncg_strkey（不是每构建随机）。理由：
+ *   · 它必须在 libnc.so 侧以字面量出现（dlsym 的入参），随机化要跨两个
+ *     仓库传名字，第一步先把链路打通再谈
+ *   · 暴露的信息有限：知道「这里取种子」不等于知道种子是什么
+ *   · 后续若要随机化，做法与桩名一致（protect.sh 生成 → 经 --stub-seed
+ *     同一条通道传给 dpt → 构建期写进两侧）
+ */
+__attribute__((used, retain, visibility("default")))
+uint64_t ncg_strkey(void) {
+    return g_shell_config.stub_seed;
+}
+
 DPT_ENCRYPT void clinit(JNIEnv *env, jclass) {
     int rand = getRandom(1, 100);
     if(rand % 2 == 0) {
