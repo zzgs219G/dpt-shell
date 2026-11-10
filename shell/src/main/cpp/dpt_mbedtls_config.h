@@ -6,7 +6,7 @@
  * 上游默认 `mbedtls_config.h` 开了 142 个模块，包含 TLS/DTLS、X509 证书解析、
  * RSA、11 条椭圆曲线、bignum 大数运算、CRT_DRBG、entropy 等 —— 壳一个都不用。
  *
- * 壳只用到（`grep -oE 'mbedtls_[a-z_0-9]+' shell/src/main/cpp/*.cpp` 的全部结果）：
+ * 壳只用到（`grep -oE 'mbedtls_[a-z_0-9]+' shell/src/main/cpp/` 全部 .cpp 的结果）：
  *   · SHA-256      —— 证书指纹、HMAC 底座、HKDF 的 PRF
  *   · MD/HMAC      —— buildKey 派生（`dpt_build_config.c`）
  *   · HKDF         —— 段密钥、配置密钥（`dpt_keyladder.c`）
@@ -53,14 +53,21 @@
 
 /* ── 对称加密 ──────────────────────────────────────────────────────── */
 
+/* CIPHER 通用层：mbedtls_cipher_* 的公共实现。
+ * AES/ChaCha20 的 CBC/CTR 封装都走它，缺了会在链接期报 undefined reference。 */
+#define MBEDTLS_CIPHER_C
+
 /* AES：assets/xixin_config 走 AES-CBC 解密；setkey_dec 需要 AES_DECRYPT */
 #define MBEDTLS_AES_C
 #define MBEDTLS_CIPHER_MODE_CBC
-#define MBEDTLS_CIPHER_MODE_CTR     /* ChaCha20 的 CBC/CTR 抽象层需要 */
+#define MBEDTLS_CIPHER_MODE_CTR     /* ChaCha20 的 CTR 抽象层需要 */
 
-/* ChaCha20：dex 指令解密（CryptoUtils.chacha20Crypt 的对端） */
+/* ChaCha20：dex 指令解密（CryptoUtils.chacha20Crypt 的对端）
+ *
+ * ⚠️ 不要开 MBEDTLS_CHACHAPOLY_C —— 它需要 MBEDTLS_POLY1305_C，而壳不用 AEAD。
+ *    实测报错："MBEDTLS_CHACHAPOLY_C defined, but not all prerequisites"。
+ *    壳只需要裸 ChaCha20 流密码（20 轮 + XOR），不需要 Poly1305 认证。 */
 #define MBEDTLS_CHACHA20_C
-#define MBEDTLS_CHACHAPOLY_C        /* 可选；若不需要 AEAD 可去掉 */
 
 /* ── 密钥派生 ──────────────────────────────────────────────────────── */
 
