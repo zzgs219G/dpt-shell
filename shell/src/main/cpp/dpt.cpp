@@ -384,62 +384,25 @@ DPT_ENCRYPT jlong get_stub_seed_export(JNIEnv *env, jclass) {
     return (jlong) g_shell_config.stub_seed;
 }
 
-/* ── 字符串密钥种子导出（2026-11-10，纯 C 桩与壳的联动）───────────────
+/* 字符串密钥种子导出（2026-11-10）。给纯 C 桩用：
+ * 纯 C 桩（--stringenc-native）的密钥此前是编译期常量，脱壳后丢掉壳 so
+ * 仍能解密。本函数让种子改为运行期从壳取，与 Java 桩的 gseed() 同源
+ * （都是 g_shell_config.stub_seed），但走 C 符号而非 JNI —— 纯 C 侧
+ * 没有 JNIEnv。派生（种子→密钥）交给 libnc.so，壳只管「种子是什么」。
  *
- * 纯 C 桩（artifact-pipeline 的 --stringenc-native）在 libnc.so 里解密字符串，
- * 而它的密钥材料此前是【编译期常量】（nc_strdec_cfg.h 的 NC_STRDEC_KEY_BYTES）。
- * 后果：脱壳后即使丢掉壳 so（assets/xixin 下的 libxixin.so），libnc.so
- * 仍能独立解密 —— 「必须带着壳运行」这条联动不成立。
+ * 三个属性缺一不可（都实测过）：
+ *   extern "C"            → 否则 mangling 成 _Z10ncg_strkeyv，dlsym 找不到
+ *                           （v1.6.0 实测：功能正常但联动静默失效）
+ *   used, retain          → 本 so 开了 --gc-sections，而引用方是运行期
+ *                           dlsym，链接期看不到引用 → 会被回收
+ *   visibility("default") → 编译带 -fvisibility=hidden，不加就藏起来
  *
- * 本函数把种子改为【运行期从壳取】，与服务 Java 桩的 gseed() 同源
- * （都是 g_shell_config.stub_seed），但走【C 符号】而不是 JNI：
- *   · Java 桩：SEED = JniBridge.gseed()      —— 要跨 JNI，纯 C 桩没有 JNIEnv 时用不了
- *   · 纯 C 桩：ncg_strkey() 经 dlsym 拿到    —— 纯 C 侧自取，不依赖 JVM 环境
+ * 保密边界（与 gseed 相同，未引入新弱点）：种子明文返回，但其保密性靠
+ * ① .bitcode 加密段 ② assets/xixin_config 的 AES —— 拿到 so 且能解这两层
+ * 才能得到种子。符号名固定（不随机化）：它必须在 libnc.so 侧以字面量
+ * 出现，随机化要跨仓库传名，先把链路打通。
  *
- * ## 为什么返回 uint64 而不是写进调用方缓冲区
- *
- * 保持与 gseed() 的语义一致（都是那 8 字节种子），派生交给 libnc.so 侧做。
- * 壳这边只管「种子是什么」，不认识「密钥怎么算」—— 两侧职责单一，
- * 任一侧改派生算法不会撞车。
- *
- * ## 保密边界（如实）
- *
- * 种子在这里是明文返回的。它的保密性由两点保证：
- *   ① 本函数在 libxixin.so 的 .bitcode 加密段里（构建期 RC4，运行期自解）
- *   ② 种子本体在 assets/xixin_config（AES-CBC 加密），由证书派生的 key 解开
- * 也就是说：拿到 libxixin.so 且能解开 .bitcode 与 xixin_config，才能得到种子。
- * 这与 gseed() 的边界完全相同，没有引入新的弱点。
- *
- * ## 为什么必须 used, retain
- *
- * 本 so 开了 -Wl,--gc-sections（2026-10 补）。没有 used/retain 时，
- * 若链接器判定本符号无人引用（libnc.so 是【运行期 dlsym】找它，
- * 链接期看不到引用），就会把它整段回收 → dlsym 找不到 → 全体解不开。
- * 这是 --gc-sections 的经典陷阱，必须显式保住。
- *
- * ## 符号名
- *
- * 名字是固定的 ncg_strkey（不是每构建随机）。理由：
- *   · 它必须在 libnc.so 侧以字面量出现（dlsym 的入参），随机化要跨两个
- *     仓库传名字，第一步先把链路打通再谈
- *   · 暴露的信息有限：知道「这里取种子」不等于知道种子是什么
- *   · 后续若要随机化，做法与桩名一致（protect.sh 生成 → 经 --stub-seed
- *     同一条通道传给 dpt → 构建期写进两侧）
- *
- * ## ⚠️ 必须 extern "C"（2026-11-10 实测踩到）
- *
- * 本文件是 .cpp，不加 extern "C" 时符号会被 C++ name mangling 成
- * _Z10ncg_strkeyv，而 libnc.so 侧 dlsym 找的是字面量 "ncg_strkey" →
- * 永远找不到 → 联动静默失效（回退到编译期常量，功能正常但联动不成立，
- * 是最难发现的那种失败）。
- *
- * 实测证据：v1.6.0-strkey 产物 llvm-nm -D 显示 `_Z10ncg_strkeyv`。
- *
- * ## 📖 完整跨仓库契约见
- *
- * `artifact-pipeline/docs/模块联动关系.md` 联动⑧ + §1.0「跨仓库参数总表」。
- * 那里有 seed 的完整旅程（谁生成、谁消费、存在哪、丢失会怎样）。
- * 改本函数或改 `--stub-seed` 语义前请先看那张表。
+ * 📖 完整契约见 artifact-pipeline/docs/模块联动关系.md 联动⑧ + §1.0。
  */
 extern "C" __attribute__((used, retain, visibility("default")))
 uint64_t ncg_strkey(void) {
