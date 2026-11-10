@@ -8,6 +8,9 @@ project("dpt")
 # ⚠️ 注释必须留在 set() 外面：CMake 会把它当成传入 add_library 的源文件，
 #    报 `Cannot find source file: //*` -> `No SOURCES given to target`。
 set(DPT_NATIVE_SOURCE
+        # 顶掉 libc++abi 的 demangler（98,660 B，见该文件头注释）。
+        # 放第一位：保证本 .o 先于静态库被处理，强符号优先生效。
+        dpt_demangle_stub.c
         dpt.cpp
         dpt_hook.cpp
         dpt_jni.cpp
